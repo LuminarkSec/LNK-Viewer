@@ -1,0 +1,2318 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>LNK Viewer</title>
+  <style>
+    :root{
+      color-scheme: light dark;
+
+      --accent: #36c38a;
+      --warn: #f2b01e;
+      --bad: #ff4d4d;
+
+      --border: rgba(160,160,160,.35);
+      --border2: rgba(160,160,160,.55);
+
+      /* Hex view (high contrast) */
+      --hx-bg: #0b0f14;
+      --hx-frame: rgba(255,255,255,.10);
+
+      --hx-off: #9fb1c3;
+      --hx-hex: #e6edf3;
+      --hx-ascii: #d7e1ea;
+
+      --hx-null: #6f7f8f;
+      --hx-print: #74c0ff;
+      --hx-path: #8cffc8;
+
+      /* Search hit highlight */
+      --hx-hi-bg: rgba(255, 208, 0, .20);
+      --hx-hi-outline: rgba(255, 208, 0, .45);
+
+      /* Selected range (decoded-from-binary) */
+      --hx-sel-bg: rgba(0, 200, 255, .20);
+      --hx-sel-outline: rgba(0, 200, 255, .55);
+
+      /* Hovered "most specific field" highlight */
+      --hx-hov-bg: rgba(180, 80, 255, .18);
+      --hx-hov-outline: rgba(180, 80, 255, .55);
+
+      --hx-dim: #607080;
+    }
+
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Noto Sans", sans-serif; margin: 16px; }
+    header { display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; }
+    h1 { font-size: 20px; margin: 0; }
+    .muted { opacity:.75; }
+    .row { display:flex; gap:16px; flex-wrap:wrap; align-items:center; margin: 12px 0; }
+    .drop {
+      border: 2px dashed var(--border2);
+      border-radius: 12px; padding: 16px; min-height: 86px;
+      display:flex; align-items:center; justify-content:space-between; gap:16px;
+    }
+    .drop.drag { border-color: var(--accent); background: rgba(54,195,138,.10); }
+    button { padding: 8px 10px; border-radius: 10px; border: 1px solid var(--border); background: transparent; cursor:pointer; }
+    button:hover { filter: brightness(1.08); }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    input[type="file"] { max-width: 520px; }
+    input[type="search"] { padding: 8px 10px; border-radius: 10px; border: 1px solid var(--border); background: transparent; min-width: 260px; }
+    details { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; margin: 10px 0; }
+    summary { cursor: pointer; font-weight: 650; }
+    .grid { display:grid; grid-template-columns: 260px 1fr; gap: 6px 14px; margin-top: 10px; }
+    .k { opacity: .85; }
+    .v { overflow-wrap:anywhere; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    pre { padding: 10px; border-radius: 12px; border: 1px solid var(--border); overflow:auto; }
+    .pill { display:inline-block; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); margin: 2px 6px 2px 0; }
+    .warn { border-left: 4px solid var(--warn); padding-left: 10px; margin: 8px 0; }
+    .ok { border-left: 4px solid var(--accent); padding-left: 10px; margin: 8px 0; }
+    .bad { border-left: 4px solid var(--bad); padding-left: 10px; margin: 8px 0; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+    th, td { border: 1px solid var(--border); padding: 6px 8px; text-align:left; vertical-align:top; }
+    th { opacity: .9; }
+    .small { font-size: 12px; }
+    .twoCol { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 900px) { .twoCol { grid-template-columns: 1fr; } }
+
+    .clickable {
+      cursor: pointer;
+      text-decoration: underline dotted;
+      text-underline-offset: 3px;
+    }
+    .clickable:hover { filter: brightness(1.15); }
+
+    /* Coloured hex view */
+    .hex {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre;
+      border: 1px solid var(--hx-frame);
+      border-radius: 12px;
+      padding: 10px;
+      background: var(--hx-bg);
+      box-shadow: 0 10px 30px rgba(0,0,0,.25) inset;
+      user-select: none;
+      /* IMPORTANT: scroll handled by #hexBox to avoid nested scrollbars */
+      overflow: visible;
+    }
+
+    /* Hex container becomes the scroll viewport */
+    #hexBox{
+      max-height: 70vh;
+      overflow: auto;
+    }
+
+    .hx-line { display:block; }
+    .hx-off { color: var(--hx-off); display:inline-block; width: 9ch; }
+    .hx-gap { display:inline-block; width: 2ch; }
+    .hx-hex { display:inline-block; width: 49ch; color: var(--hx-hex); }
+    .hx-ascii { color: var(--hx-ascii); }
+
+    .hx-b { display:inline-block; width: 2ch; text-align:center; font-weight: 600; }
+    .hx-b.null { color: var(--hx-null); font-weight: 500; }
+    .hx-b.print { color: var(--hx-print); }
+    .hx-b.path { color: var(--hx-path); }
+    .hx-b.hit { background: var(--hx-hi-bg); outline: 1px solid var(--hx-hi-outline); border-radius: 4px; }
+    .hx-b.hov { background: var(--hx-hov-bg); outline: 1px solid var(--hx-hov-outline); border-radius: 4px; }
+    .hx-b.sel { background: var(--hx-sel-bg); outline: 1px solid var(--hx-sel-outline); border-radius: 4px; }
+    .hx-b.anchor { outline: 2px solid rgba(255,255,255,.35); border-radius: 4px; }
+
+    .hx-a { display:inline-block; width: 1ch; text-align:center; }
+    .hx-a.dim { color: var(--hx-dim); }
+    .hx-a.hit { background: var(--hx-hi-bg); outline: 1px solid var(--hx-hi-outline); border-radius: 4px; }
+    .hx-a.hov { background: var(--hx-hov-bg); outline: 1px solid var(--hx-hov-outline); border-radius: 4px; }
+    .hx-a.sel { background: var(--hx-sel-bg); outline: 1px solid var(--hx-sel-outline); border-radius: 4px; }
+
+    .toolbar { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin: 10px 0; }
+    .toggle { display:flex; align-items:center; gap:8px; border:1px solid var(--border); border-radius: 999px; padding: 6px 10px; }
+    .toggle input { transform: scale(1.1); }
+
+    .badge { display:inline-block; padding: 1px 6px; border-radius: 999px; border:1px solid var(--border); }
+
+    /* Hover tooltip in hex view */
+    .hx-tip{
+      position: fixed;
+      z-index: 9999;
+      pointer-events: none;
+      max-width: 560px;
+      padding: 6px 8px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,.15);
+      background: rgba(10,14,18,.92);
+      color: #e6edf3;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 12px;
+      line-height: 1.35;
+      box-shadow: 0 12px 30px rgba(0,0,0,.35);
+      white-space: pre-wrap;
+    }
+
+    /* Right-click copy menu (hex view) */
+    .hx-menu{
+      position: fixed;
+      z-index: 10000;
+      min-width: 220px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,.15);
+      background: rgba(10,14,18,.96);
+      color: #e6edf3;
+      box-shadow: 0 16px 40px rgba(0,0,0,.45);
+      padding: 6px;
+    }
+    .hx-menu button{
+      width: 100%;
+      text-align: left;
+      padding: 8px 10px;
+      border-radius: 10px;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+    }
+    .hx-menu button:hover{ background: rgba(255,255,255,.08); }
+    .hx-menu .sep{
+      height: 1px;
+      margin: 6px 4px;
+      background: rgba(255,255,255,.10);
+    }
+    .hx-menu .hint{
+      padding: 6px 10px;
+      opacity: .75;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>LNK Viewer</h1>
+    <span class="muted small">Offline HTML parser for Windows Shell Link (.lnk)</span>
+  </header>
+
+  <div class="row">
+    <input id="file" type="file" accept=".lnk,application/octet-stream" />
+    <button id="copyJson" disabled>Copy JSON</button>
+    <button id="downloadJson" disabled>Download JSON</button>
+  </div>
+
+  <div id="drop" class="drop">
+    <div>
+      <div><strong>Drag & drop</strong> a <code>.lnk</code> file here</div>
+      <div class="muted small">This viewer does not execute anything; it only parses bytes in your browser.</div>
+    </div>
+    <div class="muted small mono" id="status">No file loaded</div>
+  </div>
+
+  <div id="alerts"></div>
+  <div id="out"></div>
+
+<script>
+(() => {
+  // ---------- Utilities ----------
+  const el = (tag, attrs = {}, children = []) => {
+    const n = document.createElement(tag);
+    for (const [k,v] of Object.entries(attrs)) {
+      if (k === "class") n.className = v;
+      else if (k === "html") n.innerHTML = v;
+      else if (k.startsWith("on") && typeof v === "function") n.addEventListener(k.slice(2), v);
+      else n.setAttribute(k, v);
+    }
+    for (const c of children) n.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+    return n;
+  };
+
+  const hex = (n, w=8) => "0x" + (n >>> 0).toString(16).toUpperCase().padStart(w, "0");
+  const hexU16 = (n) => "0x" + (n & 0xFFFF).toString(16).toUpperCase().padStart(4, "0");
+  const b2 = (b) => b.toString(16).toUpperCase().padStart(2,"0");
+
+  function filetimeToIso(ftLow, ftHigh) {
+    const ft = (BigInt(ftHigh) << 32n) | BigInt(ftLow >>> 0);
+    if (ft === 0n) return null;
+    const EPOCH_DIFF_100NS = 116444736000000000n;
+    const ms = Number((ft - EPOCH_DIFF_100NS) / 10000n);
+    if (!Number.isFinite(ms)) return null;
+    return new Date(ms).toISOString();
+  }
+
+  function readGuid(u8, off) {
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    const d1 = dv.getUint32(off, true);
+    const d2 = dv.getUint16(off+4, true);
+    const d3 = dv.getUint16(off+6, true);
+    const b = [];
+    for (let i=0;i<8;i++) b.push(u8[off+8+i]);
+    const s4 = b.slice(0,2).map(x=>x.toString(16).padStart(2,"0")).join("");
+    const s5 = b.slice(2).map(x=>x.toString(16).padStart(2,"0")).join("");
+    return `${d1.toString(16).padStart(8,"0")}-${d2.toString(16).padStart(4,"0")}-${d3.toString(16).padStart(4,"0")}-${s4}-${s5}`.toLowerCase();
+  }
+
+  function readFixedAnsi(u8, off, len) {
+    const bytes = u8.slice(off, off+len);
+    let end = bytes.indexOf(0);
+    if (end < 0) end = bytes.length;
+    return new TextDecoder("windows-1252", {fatal:false}).decode(bytes.slice(0, end));
+  }
+
+  function readNullTerminatedAnsi(u8, off, hardEnd = u8.length) {
+    let i = off;
+    const stop = Math.min(hardEnd, u8.length);
+    while (i < stop && u8[i] !== 0) i++;
+    const bytes = u8.slice(off, i);
+    const s = new TextDecoder("windows-1252", {fatal:false}).decode(bytes);
+    return { value: s, next: Math.min(i+1, stop) };
+  }
+
+  function readNullTerminatedUtf16le(u8, off, hardEnd = u8.length) {
+    let i = off;
+    const stop = Math.min(hardEnd, u8.length);
+    while (i+1 < stop) {
+      if (u8[i] === 0 && u8[i+1] === 0) break;
+      i += 2;
+    }
+    const bytes = u8.slice(off, i);
+    const s = new TextDecoder("utf-16le", {fatal:false}).decode(bytes);
+    return { value: s, next: Math.min(i+2, stop) };
+  }
+
+  // Return a byte range (start,len) for a null-terminated ANSI string within [off, hardEnd)
+  function ansiStringRange(u8, off, hardEnd) {
+    const stop = Math.min(hardEnd, u8.length);
+    let i = off;
+    while (i < stop && u8[i] !== 0) i++;
+    const len = Math.max(0, i - off);
+    return { absOff: off, len: Math.max(0, len) };
+  }
+
+  // Return a byte range (start,len) for a null-terminated UTF-16LE string within [off, hardEnd)
+  function utf16leStringRange(u8, off, hardEnd) {
+    const stop = Math.min(hardEnd, u8.length);
+    let i = off;
+    while (i+1 < stop) {
+      if (u8[i] === 0 && u8[i+1] === 0) break;
+      i += 2;
+    }
+    const len = Math.max(0, i - off);
+    return { absOff: off, len: Math.max(0, len) };
+  }
+
+  function showCommandName(n) {
+    const m = {0:"SW_HIDE",1:"SW_SHOWNORMAL",2:"SW_SHOWMINIMISED",3:"SW_SHOWMAXIMISED",4:"SW_SHOWNOACTIVATE",5:"SW_SHOW",6:"SW_MINIMISE",7:"SW_SHOWMINNOACTIVE",8:"SW_SHOWNA",9:"SW_RESTORE",10:"SW_SHOWDEFAULT"};
+    return m[n] || `Unknown (${n})`;
+  }
+
+  function driveTypeName(n) {
+    const m = {0:"DRIVE_UNKNOWN",1:"DRIVE_NO_ROOT_DIR",2:"DRIVE_REMOVABLE",3:"DRIVE_FIXED",4:"DRIVE_REMOTE",5:"DRIVE_CDROM",6:"DRIVE_RAMDISK"};
+    return m[n] || `Unknown (${n})`;
+  }
+
+  function decodeHotKey(hk) {
+    const key = hk & 0x00FF;
+    const mods = (hk & 0xFF00) >>> 8;
+    const modNames = [];
+    if (mods & 0x01) modNames.push("SHIFT");
+    if (mods & 0x02) modNames.push("CTRL");
+    if (mods & 0x04) modNames.push("ALT");
+    const keyName = vkName(key);
+    return { raw: hexU16(hk), modifiers: modNames, keyCode: "0x" + key.toString(16).toUpperCase().padStart(2, "0"), keyName, display: (modNames.length ? modNames.join("+") + "+" : "") + keyName };
+  }
+
+  function vkName(vk) {
+    if (vk >= 0x30 && vk <= 0x39) return String.fromCharCode(vk);
+    if (vk >= 0x41 && vk <= 0x5A) return String.fromCharCode(vk);
+    const m = {0x08:"BACKSPACE",0x09:"TAB",0x0D:"ENTER",0x1B:"ESC",0x20:"SPACE",0x21:"PAGEUP",0x22:"PAGEDOWN",0x23:"END",0x24:"HOME",0x25:"LEFT",0x26:"UP",0x27:"RIGHT",0x28:"DOWN",0x2D:"INS",0x2E:"DEL",0x70:"F1",0x71:"F2",0x72:"F3",0x73:"F4",0x74:"F5",0x75:"F6",0x76:"F7",0x77:"F8",0x78:"F9",0x79:"F10",0x7A:"F11",0x7B:"F12"};
+    return m[vk] || ("VK_" + vk.toString(16).toUpperCase().padStart(2,"0"));
+  }
+
+  function looksUNC(s) { return typeof s === "string" && s.startsWith("\\\\"); }
+  function looksDrivePath(s) { return typeof s === "string" && /^[A-Za-z]:\\/.test(s); }
+
+  // ---------- Copy format helpers ----------
+  function bytesToHex(u8, startAbs, endAbs) {
+    const out = [];
+    for (let i = startAbs; i < endAbs; i++) out.push(b2(u8[i]));
+    return out.join(" ");
+  }
+
+  function bytesToAscii(u8, startAbs, endAbs) {
+    let s = "";
+    for (let i = startAbs; i < endAbs; i++) {
+      const b = u8[i];
+      s += (b >= 0x20 && b < 0x7F) ? String.fromCharCode(b) : ".";
+    }
+    return s;
+  }
+
+  function bytesToCStyle(u8, startAbs, endAbs) {
+    let s = "";
+    for (let i = startAbs; i < endAbs; i++) s += "\\x" + b2(u8[i]).toLowerCase();
+    return s;
+  }
+
+  function formatCopyPayload(u8, startAbs, endAbs, mode) {
+    const len = Math.max(0, endAbs - startAbs);
+
+    if (mode === "hex") return bytesToHex(u8, startAbs, endAbs);
+    if (mode === "c") return bytesToCStyle(u8, startAbs, endAbs);
+
+    // "hexdump"
+    return [
+      `Offset: ${hex(startAbs)}  Length: ${len}`,
+      `HEX: ${bytesToHex(u8, startAbs, endAbs)}`,
+      `ASCII: ${bytesToAscii(u8, startAbs, endAbs)}`
+    ].join("\n");
+  }
+
+  async function copyTextToClipboard(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand("copy"); } catch { ok = false; }
+      ta.remove();
+      return ok;
+    }
+  }
+
+  // ---------- Known Folder ID mapping (partial, extendable) ----------
+  // The values correspond to Knownfolders.h KNOWNFOLDERID GUIDs.
+  const KNOWN_FOLDER_MAP = new Map(Object.entries({
+    // Commonly seen in LNK KnownFolderDataBlock
+    "1ac14e77-02e7-4e5d-b744-2eb1ae5198b7": { constName: "FOLDERID_System", friendly: "System32" },
+    "d65231b0-b2f1-4857-a4ce-a8e7c6ea7d27": { constName: "FOLDERID_SystemX86", friendly: "System32 (x86 / SysWOW64 mapping)" },
+    "f38bf404-1d43-42f2-9305-67de0b28fc23": { constName: "FOLDERID_Windows", friendly: "Windows" },
+
+    // User profile & AppData
+    "5e6c858f-0e22-4760-9afe-ea3317b67173": { constName: "FOLDERID_Profile", friendly: "User Profile" },
+    "3eb685db-65f9-4cf6-a03a-e3ef65729f3d": { constName: "FOLDERID_RoamingAppData", friendly: "AppData (Roaming)" },
+    "f1b32785-6fba-4fcf-9d55-7b8e7f157091": { constName: "FOLDERID_LocalAppData", friendly: "AppData (Local)" },
+    "a520a1a4-1780-4ff6-bd18-167343c5af16": { constName: "FOLDERID_LocalAppDataLow", friendly: "AppData (LocalLow)" },
+
+    // Core user folders
+    "b4bfcc3a-db2c-424c-b029-7fe99a87c641": { constName: "FOLDERID_Desktop", friendly: "Desktop" },
+    "fdd39ad0-238f-46af-adb4-6c85480369c7": { constName: "FOLDERID_Documents", friendly: "Documents" },
+    "374de290-123f-4565-9164-39c4925e467b": { constName: "FOLDERID_Downloads", friendly: "Downloads" },
+    "1777f761-68ad-4d8a-87bd-30b759fa33dd": { constName: "FOLDERID_Favorites", friendly: "Favourites" },
+    "4bd8d571-6d19-48d3-be97-422220080e43": { constName: "FOLDERID_Music", friendly: "Music" },
+    "33e28130-4e1e-4676-835a-98395c3bc3bb": { constName: "FOLDERID_Pictures", friendly: "Pictures" },
+    "18989b1d-99b5-455b-841c-ab7c74e4ddfc": { constName: "FOLDERID_Videos", friendly: "Videos" },
+
+    // Public folders
+    "dfdf76a2-c82a-4d63-906a-5644ac457385": { constName: "FOLDERID_Public", friendly: "Public" },
+    "c4aa340d-f20f-4863-afef-f87ef2e6ba25": { constName: "FOLDERID_PublicDesktop", friendly: "Public Desktop" },
+    "ed4824af-dce4-45a8-81e2-fc7965083634": { constName: "FOLDERID_PublicDocuments", friendly: "Public Documents" },
+    "3d644c9b-1fb8-4f30-9b45-f670235f79c0": { constName: "FOLDERID_PublicDownloads", friendly: "Public Downloads" },
+    "3214fab5-9757-4298-bb61-92a9deaa44ff": { constName: "FOLDERID_PublicMusic", friendly: "Public Music" },
+    "b6ebfb86-6907-413c-9af7-4fc2abf07cc5": { constName: "FOLDERID_PublicPictures", friendly: "Public Pictures" },
+    "2400183a-6185-49fb-a2d8-4a392a602ba3": { constName: "FOLDERID_PublicVideos", friendly: "Public Videos" },
+
+    // Program Files / ProgramData
+    "62ab5d82-fdc1-4dc3-a9dd-070d1d495d97": { constName: "FOLDERID_ProgramData", friendly: "ProgramData" },
+    "905e63b6-c1bf-494e-b29c-65b732d3d21a": { constName: "FOLDERID_ProgramFiles", friendly: "Program Files" },
+    "7c5a40ef-a0fb-4bfc-874a-c0f2e0b9fa8e": { constName: "FOLDERID_ProgramFilesX86", friendly: "Program Files (x86)" },
+    "6d809377-6af0-444b-8957-a3773f02200e": { constName: "FOLDERID_ProgramFilesX64", friendly: "Program Files (x64)" },
+    "f7f1ed05-9f6d-47a2-aaae-29d317c6f066": { constName: "FOLDERID_ProgramFilesCommon", friendly: "Common Files" },
+    "de974d24-d9c6-4d3e-bf91-f4455120b917": { constName: "FOLDERID_ProgramFilesCommonX86", friendly: "Common Files (x86)" },
+    "6365d5a7-0f0d-45e5-87f6-0da56b6a4f7d": { constName: "FOLDERID_ProgramFilesCommonX64", friendly: "Common Files (x64)" },
+
+    // Explorer / Shell staples
+    "ae50c081-ebd2-438a-8655-8a092e34987a": { constName: "FOLDERID_Recent", friendly: "Recent Items" },
+    "52a4f021-7b75-48a9-9f6b-4b87a210bc8f": { constName: "FOLDERID_QuickLaunch", friendly: "Quick Launch" },
+    "8983036c-27c0-404b-8f08-102d10dcfd74": { constName: "FOLDERID_SendTo", friendly: "SendTo" },
+    "625b53c3-ab48-4ec1-ba1f-a1ef4146fc19": { constName: "FOLDERID_StartMenu", friendly: "Start Menu" },
+    "b97d20bb-f46a-4c97-ba10-5e3608430854": { constName: "FOLDERID_Startup", friendly: "Startup" },
+    "a77f5d77-2e2b-44c3-a6a2-aba601054a51": { constName: "FOLDERID_Programs", friendly: "Start Menu \\ Programs" },
+    "bfb9d5e0-c6a9-404c-b2b2-ae6db6af4968": { constName: "FOLDERID_Links", friendly: "Links" },
+    "b7534046-3ecb-4c18-be4e-64cd4cb7d6ac": { constName: "FOLDERID_RecycleBinFolder", friendly: "Recycle Bin" },
+
+    // Virtual/system locations
+    "0ac0837c-bbf8-452a-850d-79d08e667ca7": { constName: "FOLDERID_ComputerFolder", friendly: "This PC" },
+    "82a74aeb-aeb4-465c-a014-d097ee346d63": { constName: "FOLDERID_ControlPanelFolder", friendly: "Control Panel" },
+    "d20beec4-5ca8-4905-ae3b-bf251ea09b53": { constName: "FOLDERID_NetworkFolder", friendly: "Network" },
+    "6f0cd92b-2e97-45d1-88ff-b0d186b8dedd": { constName: "FOLDERID_ConnectionsFolder", friendly: "Network Connections" },
+
+    // IE-era artefacts (still show up in some environments / legacy parsing)
+    "d9dc8a3b-b784-432e-a781-5a1130a75963": { constName: "FOLDERID_History", friendly: "History" },
+    "352481e8-33be-4251-ba85-6007caedcf9d": { constName: "FOLDERID_InternetCache", friendly: "Internet Cache" },
+    "2b0f765d-c0e9-4171-908e-08a611b84ff6": { constName: "FOLDERID_Cookies", friendly: "Cookies" },
+
+    // Misc
+    "fd228cb7-ae11-4ae3-864c-16f3910ab8fe": { constName: "FOLDERID_Fonts", friendly: "Fonts" },
+    "56784854-c6cb-462b-8169-88e350acb882": { constName: "FOLDERID_Contacts", friendly: "Contacts" },
+
+    "c5abbf53-e17f-4121-8900-86626fc2c973": { constName: "FOLDERID_CloudStorageProvider", friendly: "Cloud Storage Provider" },
+
+    "c5ab?": { constName: "REMOVED_DUPLICATES", friendly: "Removed duplicate entries" },
+
+    "c5abbf53-e17f-4121-8900-86626fc2c973": { constName: "FOLDERID_CloudStorageProvider", friendly: "Cloud Storage Provider" },
+
+    // NetHood correct GUID (FOLDERID_NetHood) is:
+    "c5abbf53-e17f-4121-8900-86626fc2c973": { constName: "FOLDERID_NetHood", friendly: "NetHood (Network Shortcuts)" },
+
+    "2a00375e-224c-49de-b8d1-440df7ef3ddc": { constName: "FOLDERID_LocalizedResourcesDir", friendly: "Localised Resources" },
+    "8ad10c31-2adb-4296-a8f7-e4701232c972": { constName: "FOLDERID_ResourceDir", friendly: "Resources" }
+  }));
+
+  function lookupKnownFolder(guid) {
+    const key = String(guid || "").toLowerCase();
+    return KNOWN_FOLDER_MAP.get(key) || null;
+  }
+
+  function normaliseGuidString(s) {
+    if (!s) return null;
+    const m = String(s).trim().toLowerCase().match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+    return m ? m[0] : null;
+  }
+
+  function knownFolderLookup(guidStr) {
+    const g = normaliseGuidString(guidStr);
+    if (!g) return null;
+    const hit = KNOWN_FOLDER_MAP.get(g);
+    if (!hit) return null;
+    return { guid: g, ...hit };
+  }
+
+  function formatKnownFolderDisplay(guidStr) {
+    const hit = knownFolderLookup(guidStr);
+    if (!hit) return null;
+    return `${hit.friendly} (${hit.constName})`;
+  }
+
+  // ---------- UTF-16LE search helpers ----------
+  function encodeUtf16le(str) {
+    const out = new Uint8Array(str.length * 2);
+    for (let i = 0; i < str.length; i++) {
+      const code = str.charCodeAt(i);
+      out[i*2] = code & 0xFF;
+      out[i*2+1] = (code >>> 8) & 0xFF;
+    }
+    return out;
+  }
+
+  function findUtf16leNeedle(u8, needle) {
+    if (!needle) return -1;
+    const n = needle.toLowerCase();
+    if (n.length < 2) return -1;
+    const nb = encodeUtf16le(n);
+
+    const proj = new Uint8Array(u8.length);
+    proj.set(u8);
+    for (let i=0;i+1<u8.length;i++) {
+      if (u8[i+1] === 0x00 && u8[i] >= 0x41 && u8[i] <= 0x5A) proj[i] = u8[i] + 0x20;
+    }
+
+    for (let i=0;i+nb.length<=proj.length;i++) {
+      let ok = true;
+      for (let j=0;j<nb.length;j++) if (proj[i+j] !== nb[j]) { ok=false; break; }
+      if (ok) return i;
+    }
+    return -1;
+  }
+
+  function readFixedUtf16leZ(u8, off, maxBytes, hardEnd = u8.length) {
+    const end = Math.min(hardEnd, off + maxBytes, u8.length);
+    let p = off;
+    while (p + 1 < end) {
+      if (u8[p] === 0x00 && u8[p + 1] === 0x00) break;
+      p += 2;
+    }
+    const bytes = u8.slice(off, p);
+    return new TextDecoder("utf-16le", { fatal: false }).decode(bytes);
+  }
+
+  function findAsciiNeedle(u8, needle) {
+    if (!needle) return -1;
+    const n = needle.toLowerCase();
+    if (n.length < 2) return -1;
+
+    const nb = new TextEncoder().encode(n);
+
+    const proj = new Uint8Array(u8.length);
+    for (let i=0;i<u8.length;i++) {
+      const b = u8[i];
+      proj[i] = (b>=0x41 && b<=0x5A) ? (b+0x20) : b;
+    }
+
+    for (let i=0;i+nb.length<=proj.length;i++) {
+      let ok = true;
+      for (let j=0;j<nb.length;j++) if (proj[i+j] !== nb[j]) { ok=false; break; }
+      if (ok) return i;
+    }
+    return -1;
+  }
+
+  function findNeedle(u8, needle) {
+    const ascii = findAsciiNeedle(u8, needle);
+    if (ascii >= 0) return { pos: ascii, mode: "ASCII" };
+    const u16 = findUtf16leNeedle(u8, needle);
+    if (u16 >= 0) return { pos: u16, mode: "UTF-16LE" };
+    return { pos: -1, mode: null };
+  }
+
+  function buildHitMap(u8, start, end, needle) {
+    const len = end - start;
+    const hitMap = new Uint8Array(len);
+    const n = (needle || "").toLowerCase();
+    if (n.length < 2) return hitMap;
+
+    // ASCII
+    {
+      const nb = new TextEncoder().encode(n);
+      const proj = new Uint8Array(len);
+      for (let i=0;i<len;i++) {
+        const b = u8[start+i];
+        proj[i] = (b>=0x41 && b<=0x5A) ? (b+0x20) : b;
+      }
+      for (let i=0;i+nb.length<=len;i++) {
+        let ok = true;
+        for (let j=0;j<nb.length;j++) if (proj[i+j] !== nb[j]) { ok=false; break; }
+        if (ok) for (let j=0;j<nb.length;j++) hitMap[i+j] = 1;
+      }
+    }
+
+    // UTF-16LE
+    {
+      const nb = encodeUtf16le(n);
+      const proj = new Uint8Array(len);
+      for (let i=0;i<len;i++) proj[i] = u8[start+i];
+      for (let i=0;i+1<len;i++) {
+        if (proj[i+1] === 0x00 && proj[i] >= 0x41 && proj[i] <= 0x5A) proj[i] = proj[i] + 0x20;
+      }
+      for (let i=0;i+nb.length<=len;i++) {
+        let ok = true;
+        for (let j=0;j<nb.length;j++) if (proj[i+j] !== nb[j]) { ok=false; break; }
+        if (ok) for (let j=0;j<nb.length;j++) hitMap[i+j] = 1;
+      }
+    }
+
+    return hitMap;
+  }
+
+  // ---------- Heuristic: extract printable UTF-16LE strings from a byte range ----------
+  function carveUtf16leStrings(u8, start, end, minChars=6) {
+    const out = [];
+    let i = start;
+    while (i+1 < end) {
+      let j = i;
+      while (j+1 < end) {
+        const lo = u8[j], hi = u8[j+1];
+        if (hi !== 0x00) break;
+        if (lo < 0x20 || lo > 0x7E) break;
+        j += 2;
+      }
+      const chars = (j - i) / 2;
+      if (chars >= minChars) {
+        const s = new TextDecoder("utf-16le",{fatal:false}).decode(u8.slice(i, j));
+        if (s && !out.includes(s)) out.push(s);
+        i = j + 2;
+      } else {
+        i += 2;
+      }
+    }
+    return out.slice(0, 30);
+  }
+
+  // ---------- Coloured hex renderer ----------
+  function renderHexColour(u8, absStart, len, opts) {
+    const group = opts.group ?? 16;
+    const maxBytes = opts.maxBytes ?? len;
+    const start = Math.max(0, absStart);
+    const end = Math.min(u8.length, start + Math.min(len, maxBytes));
+
+    const needle = (opts.search || "");
+    const highlightHits = opts.highlightHits ?? true;
+    const selectedRange = opts.selectedRange || null;
+    const hoverRange = opts.hoverRange || null;
+    const anchorAbs = opts.anchorAbs ?? null;
+
+    const hitMap = highlightHits ? buildHitMap(u8, start, end, needle) : new Uint8Array(end-start);
+
+    const wrap = el("div", {class:"hex", id: opts.hexId || ""});
+
+    for (let i = start; i < end; i += group) {
+      const lineStart = i;
+      const lineEnd = Math.min(end, i + group);
+
+      const lineNode = el("span", {class:"hx-line"});
+      lineNode.appendChild(el("span", {class:"hx-off"}, [(lineStart).toString(16).toUpperCase().padStart(8,"0")]));
+
+      const hexCol = el("span", {class:"hx-hex"});
+      for (let j=0;j<group;j++) {
+        if (j && j % 8 === 0) hexCol.appendChild(document.createTextNode(" "));
+        if (lineStart + j >= lineEnd) {
+          hexCol.appendChild(document.createTextNode("   "));
+          continue;
+        }
+
+        const absPos = lineStart + j;
+        const b = u8[absPos];
+        const rel = absPos - start;
+
+        const isHit = highlightHits && hitMap[rel] === 1;
+        const isSel = selectedRange && absPos >= selectedRange.startAbs && absPos < selectedRange.endAbs;
+        const isHov = hoverRange && absPos >= hoverRange.startAbs && absPos < hoverRange.endAbs;
+        const isAnchor = anchorAbs !== null && absPos === anchorAbs;
+
+        const cls = ["hx-b"];
+        if (b === 0x00) cls.push("null");
+        const printable = (b >= 0x20 && b < 0x7F);
+        if (printable) cls.push("print");
+        const pathish = printable && ("\\/:._-".includes(String.fromCharCode(b)) ||
+          (b>=0x30 && b<=0x39) || (b>=0x41 && b<=0x5A) || (b>=0x61 && b<=0x7A));
+        if (pathish) cls.push("path");
+        if (isHit) cls.push("hit");
+        if (isHov) cls.push("hov");
+        if (isSel) cls.push("sel");
+        if (isAnchor) cls.push("anchor");
+
+        const byteNode = el("span", {class: cls.join(" ")}, [b2(b)]);
+        byteNode.dataset.abs = String(absPos);
+        hexCol.appendChild(byteNode);
+        hexCol.appendChild(document.createTextNode(" "));
+      }
+      lineNode.appendChild(hexCol);
+
+      lineNode.appendChild(el("span", {class:"hx-gap"}, [" "]));
+      lineNode.appendChild(document.createTextNode("|"));
+      const asciiCol = el("span", {class:"hx-ascii"});
+      for (let j=0;j<group;j++) {
+        if (lineStart + j >= lineEnd) break;
+        const absPos = lineStart + j;
+        const b = u8[absPos];
+        const rel = absPos - start;
+
+        const isHit = highlightHits && hitMap[rel] === 1;
+        const isSel = selectedRange && absPos >= selectedRange.startAbs && absPos < selectedRange.endAbs;
+        const isHov = hoverRange && absPos >= hoverRange.startAbs && absPos < hoverRange.endAbs;
+
+        const printable = (b >= 0x20 && b < 0x7F);
+        const ch = printable ? String.fromCharCode(b) : ".";
+        const cls = ["hx-a"];
+        if (!printable) cls.push("dim");
+        if (isHit) cls.push("hit");
+        if (isHov) cls.push("hov");
+        if (isSel) cls.push("sel");
+        const aNode = el("span", {class: cls.join(" ")}, [ch]);
+        aNode.dataset.abs = String(absPos);
+        asciiCol.appendChild(aNode);
+      }
+      lineNode.appendChild(asciiCol);
+      lineNode.appendChild(document.createTextNode("|"));
+
+      wrap.appendChild(lineNode);
+    }
+
+    return wrap;
+  }
+
+  // ---------- Parse ItemIDList (simple) ----------
+  function parseItemIDList(u8, absStart, byteLen) {
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    const items = [];
+    let p = absStart;
+    const end = Math.min(u8.length, absStart + byteLen);
+    let guard = 0;
+
+    while (p + 2 <= end && guard++ < 10000) {
+      const size = dv.getUint16(p, true);
+      if (size === 0) { items.push({ kind: "TERMINATOR", absOffset: p, size: 2 }); p += 2; break; }
+      if (size < 2) { items.push({ kind: "INVALID", absOffset: p, size, note: "Item size < 2; stopping." }); break; }
+      const itemEnd = p + size;
+      if (itemEnd > end) { items.push({ kind: "TRUNCATED", absOffset: p, size, note: "Item extends beyond IDList size; stopping." }); break; }
+
+      const data = u8.slice(p + 2, itemEnd);
+      const typeByte = data.length ? data[0] : null;
+      let hint = "Shell item (unknown)";
+      if (typeByte !== null) {
+        if ((typeByte & 0x70) === 0x20) hint = "File entry (common)";
+        else if ((typeByte & 0x70) === 0x30) hint = "Folder entry (common)";
+        else if ((typeByte & 0x70) === 0x40) hint = "Volume / root (common)";
+        else if ((typeByte & 0x70) === 0x50) hint = "Network / share (common)";
+      }
+
+      items.push({
+        kind: "ITEM",
+        absOffset: p,
+        size,
+        typeByte: typeByte === null ? null : ("0x" + typeByte.toString(16).toUpperCase().padStart(2, "0")),
+        hint,
+        dataAbsStart: p + 2,
+        dataLen: size - 2
+      });
+      p = itemEnd;
+    }
+
+    return { items, parsedBytes: p - absStart, end };
+  }
+
+  // ---------- ExtraData parsing (key blocks) ----------
+  const EXTRA_SIG = {
+    EnvironmentVariableDataBlock: 0xA0000001,
+    ConsoleDataBlock:             0xA0000002,
+    TrackerDataBlock:             0xA0000003,
+    ConsoleFEDataBlock:           0xA0000004,
+    SpecialFolderDataBlock:       0xA0000005,
+    DarwinDataBlock:              0xA0000006,
+    IconEnvironmentDataBlock:     0xA0000007,
+    ShimDataBlock:                0xA0000008,
+    PropertyStoreDataBlock:       0xA0000009,
+    KnownFolderDataBlock:         0xA000000B,
+    VistaAndAboveIDListDataBlock: 0xA000000C
+  };
+
+  function extraSigName(sig) {
+    for (const [k,v] of Object.entries(EXTRA_SIG)) if ((sig>>>0) === (v>>>0)) return k;
+    return null;
+  }
+
+  function parseExtraBlock(u8, absStart, absEnd) {
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    if (absStart + 8 > absEnd) return { parsed: null };
+
+    const blockSize = dv.getUint32(absStart, true);
+    const sig = dv.getUint32(absStart+4, true);
+    const type = extraSigName(sig) || "UnknownExtraDataBlock";
+    const meta = {};
+    const out = { type, signature: hex(sig), blockSize, absStart, absEnd, parsed: null, meta, notes: [], carvedUtf16: [] };
+
+    meta._block = { absOff: absStart, len: Math.max(1, absEnd - absStart) };
+
+    try {
+      if (sig === EXTRA_SIG.EnvironmentVariableDataBlock) {
+        const ansiOff = absStart + 8;
+        const uniOff = absStart + 8 + 260;
+        const ansiLen = 260, uniLen = 520;
+        const tAnsi = readFixedAnsi(u8, ansiOff, Math.min(ansiLen, absEnd - ansiOff));
+        const tUni = (uniOff + 2 <= absEnd)
+          ? new TextDecoder("utf-16le",{fatal:false}).decode(u8.slice(uniOff, Math.min(absEnd, uniOff + uniLen))).replace(/\u0000+$/g,"")
+          : null;
+
+        out.parsed = { targetAnsi: tAnsi || null, targetUnicode: tUni || null };
+        meta.targetAnsi = { absOff: ansiOff, len: Math.min(ansiLen, absEnd - ansiOff) };
+        meta.targetUnicode = { absOff: uniOff, len: Math.min(uniLen, absEnd - uniOff) };
+      }
+      else if (sig === EXTRA_SIG.TrackerDataBlock) {
+        const lengthOff = absStart + 8;
+        const versionOff = absStart + 12;
+        const machineOff = absStart + 16;
+        const droidOff = absStart + 32;
+        const droidBirthOff = absStart + 64;
+
+        const len = (lengthOff + 4 <= absEnd) ? dv.getUint32(lengthOff, true) : null;
+        const ver = (versionOff + 4 <= absEnd) ? dv.getUint32(versionOff, true) : null;
+        const machine = (machineOff + 16 <= absEnd) ? readFixedAnsi(u8, machineOff, 16) : null;
+
+        const droid1 = (droidOff + 16 <= absEnd) ? readGuid(u8, droidOff) : null;
+        const droid2 = (droidOff + 32 <= absEnd) ? readGuid(u8, droidOff+16) : null;
+
+        const birth1 = (droidBirthOff + 16 <= absEnd) ? readGuid(u8, droidBirthOff) : null;
+        const birth2 = (droidBirthOff + 32 <= absEnd) ? readGuid(u8, droidBirthOff+16) : null;
+
+        out.parsed = {
+          length: len,
+          version: ver,
+          machineID: machine || null,
+          droid: [droid1, droid2].filter(Boolean),
+          droidBirth: [birth1, birth2].filter(Boolean),
+        };
+
+        meta.length = { absOff: lengthOff, len: 4 };
+        meta.version = { absOff: versionOff, len: 4 };
+        meta.machineID = { absOff: machineOff, len: Math.min(16, absEnd - machineOff) };
+        meta.droid = { absOff: droidOff, len: Math.min(32, absEnd - droidOff) };
+        meta.droidBirth = { absOff: droidBirthOff, len: Math.min(32, absEnd - droidBirthOff) };
+      }
+      else if (sig === EXTRA_SIG.ConsoleDataBlock) {
+        const fillOff = absStart + 8;
+        const popupFillOff = absStart + 10;
+        const sbxOff = absStart + 12;
+        const sbyOff = absStart + 14;
+        const wxOff = absStart + 16;
+        const wyOff = absStart + 18;
+        const fontSizeOff = absStart + 28;
+        const fontFamilyOff = absStart + 32;
+        const fontWeightOff = absStart + 36;
+
+        // faceName is 32 WCHAR = 64 bytes, and in this variant we read from +44.
+        const faceNameOff = absStart + 44;
+
+        const cursorOff = absStart + 104;
+        const fullScreenOff = absStart + 108;
+        const quickEditOff = absStart + 124;
+        const insertModeOff = absStart + 128;
+
+        const safeU16 = (o) => (o+2<=absEnd) ? dv.getUint16(o, true) : null;
+        const safeI16 = (o) => (o+2<=absEnd) ? dv.getInt16(o, true) : null;
+        const safeU32 = (o) => (o+4<=absEnd) ? dv.getUint32(o, true) : null;
+
+        const faceName = (faceNameOff + 2 <= absEnd)
+          ? readFixedUtf16leZ(u8, faceNameOff, 64, absEnd)
+          : null;
+
+        out.parsed = {
+          fillAttributes: safeU16(fillOff),
+          popupFillAttributes: safeU16(popupFillOff),
+          screenBufferSizeX: safeI16(sbxOff),
+          screenBufferSizeY: safeI16(sbyOff),
+          windowSizeX: safeI16(wxOff),
+          windowSizeY: safeI16(wyOff),
+          fontSize: safeU32(fontSizeOff),
+          fontFamily: safeU32(fontFamilyOff),
+          fontWeight: safeU32(fontWeightOff),
+          faceName: faceName || null,
+          cursorSize: safeU32(cursorOff),
+          fullScreen: safeU32(fullScreenOff),
+          quickEdit: safeU32(quickEditOff),
+          insertMode: safeU32(insertModeOff),
+        };
+
+        meta.fillAttributes = { absOff: fillOff, len: 2 };
+        meta.popupFillAttributes = { absOff: popupFillOff, len: 2 };
+        meta.screenBufferSizeX = { absOff: sbxOff, len: 2 };
+        meta.screenBufferSizeY = { absOff: sbyOff, len: 2 };
+        meta.windowSizeX = { absOff: wxOff, len: 2 };
+        meta.windowSizeY = { absOff: wyOff, len: 2 };
+        meta.fontSize = { absOff: fontSizeOff, len: 4 };
+        meta.fontFamily = { absOff: fontFamilyOff, len: 4 };
+        meta.fontWeight = { absOff: fontWeightOff, len: 4 };
+        meta.faceName = { absOff: faceNameOff, len: Math.min(64, absEnd - faceNameOff) };
+      }
+      else if (sig === EXTRA_SIG.PropertyStoreDataBlock) {
+        const payloadStart = absStart + 8;
+        out.parsed = {
+          propertyStoreBytes: Math.max(0, absEnd - payloadStart),
+          stringsHintUtf16le: carveUtf16leStrings(u8, payloadStart, absEnd, 6)
+        };
+        out.carvedUtf16 = out.parsed.stringsHintUtf16le;
+        meta.propertyStore = { absOff: payloadStart, len: Math.max(0, absEnd - payloadStart) };
+        if (out.carvedUtf16.length) out.notes.push("Heuristic: extracted candidate UTF-16LE strings from serialised property store.");
+      }
+      else if (sig === EXTRA_SIG.KnownFolderDataBlock) {
+        const guidOff = absStart + 8;
+        const guid = (guidOff + 16 <= absEnd) ? readGuid(u8, guidOff) : null;
+        const mapped = guid ? formatKnownFolderDisplay(guid) : null;
+        out.parsed = {
+          knownFolderID: guid,
+          knownFolderName: mapped
+        };
+        meta.knownFolderID = { absOff: guidOff, len: Math.min(16, absEnd - guidOff) };
+        meta.knownFolderName = meta.knownFolderID;
+      }
+      else if (sig === EXTRA_SIG.ShimDataBlock) {
+        const payloadStart = absStart + 8;
+        const hints = carveUtf16leStrings(u8, payloadStart, absEnd, 4);
+        out.parsed = { layerNameHint: hints[0] || null, stringsHintUtf16le: hints };
+        out.carvedUtf16 = hints;
+        meta.layerNameHint = { absOff: payloadStart, len: Math.max(0, absEnd - payloadStart) };
+      }
+      else {
+        const payloadStart = absStart + 8;
+        const hints = carveUtf16leStrings(u8, payloadStart, absEnd, 6);
+        if (hints.length) out.carvedUtf16 = hints;
+      }
+    } catch (e) {
+      out.notes.push("Parse error: " + (e?.message || String(e)));
+    }
+
+    return out;
+  }
+
+  // ---------- Parser ----------
+  function parseLnk(arrayBuffer) {
+    const u8 = new Uint8Array(arrayBuffer);
+    const dv = new DataView(arrayBuffer);
+
+    const res = {
+      meta: { fileSize: u8.length, parsedAt: new Date().toISOString() },
+      header: {},
+      sections: [],
+      warnings: [],
+      errors: [],
+      dfir: { suspicious: [], extracted: {}, derived: {} },
+
+      provenance: {
+        header: {},
+        linkInfo: {},
+        stringData: {},
+        extraData: {}
+      },
+
+      _bytes: u8
+    };
+
+    const must = (cond, msg) => { if (!cond) { res.errors.push(msg); return false; } return true; };
+    const warn = (cond, msg) => { if (!cond) res.warnings.push(msg); };
+
+    if (!must(u8.length >= 0x4C, "File too small to be a valid .lnk (needs >= 0x4C bytes).")) return res;
+
+    res.provenance.header = {
+      headerSize:      { off: 0x00, len: 4 },
+      linkCLSID:       { off: 0x04, len: 16 },
+      linkFlags:       { off: 0x14, len: 4 },
+      fileAttributes:  { off: 0x18, len: 4 },
+      creationTimeUtc: { off: 0x1C, len: 8 },
+      accessTimeUtc:   { off: 0x24, len: 8 },
+      writeTimeUtc:    { off: 0x2C, len: 8 },
+      fileSize:        { off: 0x34, len: 4 },
+      iconIndex:       { off: 0x38, len: 4 },
+      showCommand:     { off: 0x3C, len: 4 },
+      showCommandName: { off: 0x3C, len: 4 },
+      hotKey:          { off: 0x40, len: 2 },
+      hotKeyDecoded:   { off: 0x40, len: 2 }
+    };
+
+    const headerSize = dv.getUint32(0, true);
+    const linkCLSID = readGuid(u8, 4);
+    res.header.headerSize = headerSize;
+    res.header.linkCLSID = linkCLSID;
+
+    warn(headerSize === 0x4C, `Unexpected header size: ${headerSize} (expected 0x4C).`);
+    warn(linkCLSID === "00021401-0000-0000-c000-000000000046", `Unexpected LinkCLSID: ${linkCLSID} (expected 00021401-0000-0000-c000-000000000046).`);
+
+    const linkFlags = dv.getUint32(0x14, true);
+    const fileAttrs = dv.getUint32(0x18, true);
+    const cTimeLow = dv.getUint32(0x1C, true), cTimeHigh = dv.getUint32(0x20, true);
+    const aTimeLow = dv.getUint32(0x24, true), aTimeHigh = dv.getUint32(0x28, true);
+    const wTimeLow = dv.getUint32(0x2C, true), wTimeHigh = dv.getUint32(0x30, true);
+    const fileSize = dv.getUint32(0x34, true);
+    const iconIndex = dv.getInt32(0x38, true);
+    const showCommand = dv.getUint32(0x3C, true);
+    const hotKey = dv.getUint16(0x40, true);
+
+    res.header.linkFlags = linkFlags;
+    res.header.fileAttributes = fileAttrs;
+    res.header.creationTimeUtc = filetimeToIso(cTimeLow, cTimeHigh);
+    res.header.accessTimeUtc = filetimeToIso(aTimeLow, aTimeHigh);
+    res.header.writeTimeUtc = filetimeToIso(wTimeLow, wTimeHigh);
+    res.header.fileSize = fileSize;
+    res.header.iconIndex = iconIndex;
+    res.header.showCommand = showCommand;
+    res.header.showCommandName = showCommandName(showCommand);
+    res.header.hotKey = hotKey;
+    res.header.hotKeyDecoded = decodeHotKey(hotKey);
+
+    const FLAGS = {
+      HasLinkTargetIDList: 0x00000001,
+      HasLinkInfo:         0x00000002,
+      HasName:             0x00000004,
+      HasRelativePath:     0x00000008,
+      HasWorkingDir:       0x00000010,
+      HasArguments:        0x00000020,
+      HasIconLocation:     0x00000040,
+      IsUnicode:           0x00000080
+    };
+
+    const FILEATTR = {
+      FILE_ATTRIBUTE_READONLY:             0x00000001,
+      FILE_ATTRIBUTE_HIDDEN:               0x00000002,
+      FILE_ATTRIBUTE_SYSTEM:               0x00000004,
+      FILE_ATTRIBUTE_DIRECTORY:            0x00000010,
+      FILE_ATTRIBUTE_ARCHIVE:              0x00000020,
+      FILE_ATTRIBUTE_NORMAL:               0x00000080,
+      FILE_ATTRIBUTE_TEMPORARY:            0x00000100,
+      FILE_ATTRIBUTE_REPARSE_POINT:        0x00000400,
+      FILE_ATTRIBUTE_OFFLINE:              0x00001000
+    };
+
+    res.header.flagsDecoded = Object.entries(FLAGS).filter(([k,m]) => (linkFlags & m) !== 0).map(([k]) => k);
+    res.header.fileAttributesDecoded = Object.entries(FILEATTR).filter(([k,m]) => (fileAttrs & m) !== 0).map(([k]) => k);
+
+    let off = 0x4C;
+    const isUnicode = (linkFlags & FLAGS.IsUnicode) !== 0;
+
+    if (linkFlags & FLAGS.HasLinkTargetIDList) {
+      const start = off;
+      if (must(off + 2 <= u8.length, "Truncated LinkTargetIDListSize.")) {
+        const idListSize = dv.getUint16(off, true);
+        off += 2;
+        const listStart = off;
+        const listEnd = Math.min(u8.length, off + idListSize);
+        warn(off + idListSize <= u8.length, "LinkTargetIDList extends beyond file size.");
+
+        const parsed = parseItemIDList(u8, listStart, Math.max(0, listEnd - listStart));
+        off = listEnd;
+
+        res.sections.push({
+          name: "LinkTargetIDList",
+          start,
+          end: off,
+          detail: {
+            idListSize,
+            idListAbsStart: listStart,
+            parsedBytes: parsed.parsedBytes,
+            itemCount: parsed.items.filter(x => x.kind === "ITEM").length,
+            items: parsed.items
+          }
+        });
+      }
+    }
+
+    let linkInfoDetail = null;
+    if (linkFlags & FLAGS.HasLinkInfo) {
+      const start = off;
+      if (must(off + 4 <= u8.length, "Truncated LinkInfoSize.")) {
+        const linkInfoSize = dv.getUint32(off, true);
+        warn(off + linkInfoSize <= u8.length, "LinkInfo extends beyond file size.");
+        const linkInfoEnd = Math.min(u8.length, off + linkInfoSize);
+
+        const linkInfoHeaderSize = dv.getUint32(off + 4, true);
+        const linkInfoFlags = dv.getUint32(off + 8, true);
+        const volumeIDOffset = dv.getUint32(off + 0x0C, true);
+        const localBasePathOffset = dv.getUint32(off + 0x10, true);
+        const commonNetworkRelativeLinkOffset = dv.getUint32(off + 0x14, true);
+        const commonPathSuffixOffset = dv.getUint32(off + 0x18, true);
+
+        let localBasePathOffsetUnicode = null;
+        let commonPathSuffixOffsetUnicode = null;
+        if (linkInfoHeaderSize >= 0x24 && off + 0x24 <= u8.length) {
+          localBasePathOffsetUnicode = dv.getUint32(off + 0x1C, true);
+          commonPathSuffixOffsetUnicode = dv.getUint32(off + 0x20, true);
+        }
+
+        const detail = {
+          linkInfoAbsStart: start,
+          linkInfoAbsEnd: linkInfoEnd,
+          linkInfoSize,
+          linkInfoHeaderSize,
+          linkInfoFlags,
+          flagsDecoded: [
+            ...(linkInfoFlags & 0x1 ? ["VolumeIDAndLocalBasePath"] : []),
+            ...(linkInfoFlags & 0x2 ? ["CommonNetworkRelativeLinkAndPathSuffix"] : [])
+          ],
+          offsets: {
+            volumeIDOffset, localBasePathOffset, commonNetworkRelativeLinkOffset, commonPathSuffixOffset,
+            localBasePathOffsetUnicode, commonPathSuffixOffsetUnicode
+          }
+        };
+
+        res.provenance.linkInfo = {
+          linkInfoSize: { absOff: start + 0x00, len: 4 },
+          linkInfoHeaderSize: { absOff: start + 0x04, len: 4 },
+          linkInfoFlags: { absOff: start + 0x08, len: 4 },
+          VolumeIDOffset: { absOff: start + 0x0C, len: 4 },
+          LocalBasePathOffset: { absOff: start + 0x10, len: 4 },
+          CommonNetworkRelativeLinkOffset: { absOff: start + 0x14, len: 4 },
+          CommonPathSuffixOffset: { absOff: start + 0x18, len: 4 },
+          LocalBasePathOffsetUnicode: localBasePathOffsetUnicode ? { absOff: start + 0x1C, len: 4 } : null,
+          CommonPathSuffixOffsetUnicode: commonPathSuffixOffsetUnicode ? { absOff: start + 0x20, len: 4 } : null,
+        };
+
+        function readOffsetAnsiWithRange(rel, provKey) {
+          if (!rel) return { value: null, range: null };
+          const abs = off + rel;
+          if (abs >= linkInfoEnd) return { value: null, range: null };
+          const r = readNullTerminatedAnsi(u8, abs, linkInfoEnd);
+          const rng = ansiStringRange(u8, abs, linkInfoEnd);
+          if (provKey && rng.len > 0) res.provenance.linkInfo[provKey] = rng;
+          return { value: r.value, range: rng };
+        }
+        function readOffsetUtf16WithRange(rel, provKey) {
+          if (!rel) return { value: null, range: null };
+          const abs = off + rel;
+          if (abs >= linkInfoEnd) return { value: null, range: null };
+          const r = readNullTerminatedUtf16le(u8, abs, linkInfoEnd);
+          const rng = utf16leStringRange(u8, abs, linkInfoEnd);
+          if (provKey && rng.len > 0) res.provenance.linkInfo[provKey] = rng;
+          return { value: r.value, range: rng };
+        }
+
+        const lbpA = readOffsetAnsiWithRange(localBasePathOffset, "LocalBasePathAnsiString");
+        const cpsA = readOffsetAnsiWithRange(commonPathSuffixOffset, "CommonPathSuffixAnsiString");
+        const lbpU = readOffsetUtf16WithRange(localBasePathOffsetUnicode, "LocalBasePathUnicodeString");
+        const cpsU = readOffsetUtf16WithRange(commonPathSuffixOffsetUnicode, "CommonPathSuffixUnicodeString");
+
+        detail.localBasePath = lbpA.value;
+        detail.commonPathSuffix = cpsA.value;
+        detail.localBasePathUnicode = lbpU.value;
+        detail.commonPathSuffixUnicode = cpsU.value;
+
+        // VolumeID
+        if (volumeIDOffset && (linkInfoFlags & 0x1)) {
+          const vAbs = off + volumeIDOffset;
+          if (vAbs + 0x10 <= linkInfoEnd) {
+            const volSize = dv.getUint32(vAbs, true);
+            const driveType = dv.getUint32(vAbs + 4, true);
+            const driveSerial = dv.getUint32(vAbs + 8, true);
+            const volLabelOffset = dv.getUint32(vAbs + 0x0C, true);
+
+            const vol = {
+              volAbsStart: vAbs,
+              volSize,
+              driveType,
+              driveTypeName: driveTypeName(driveType),
+              driveSerial: hex(driveSerial),
+              volumeLabel: null
+            };
+
+            if (volLabelOffset) {
+              const p = vAbs + volLabelOffset;
+              if (p < linkInfoEnd) {
+                vol.volumeLabel = readNullTerminatedAnsi(u8, p, linkInfoEnd).value;
+                const rng = ansiStringRange(u8, p, linkInfoEnd);
+                if (rng.len > 0) res.provenance.linkInfo["VolumeID_VolumeLabelString"] = rng;
+              }
+            }
+
+            detail.volumeID = vol;
+
+            const volStructLen = Math.min(volSize, Math.max(0, linkInfoEnd - vAbs));
+            if (volStructLen > 0) res.provenance.linkInfo["VolumeID_Struct"] = { absOff: vAbs, len: volStructLen };
+          }
+        }
+
+        // CommonNetworkRelativeLink
+        if (commonNetworkRelativeLinkOffset && (linkInfoFlags & 0x2)) {
+          const nAbs = off + commonNetworkRelativeLinkOffset;
+          if (nAbs + 0x14 <= linkInfoEnd) {
+            const cnrlSize = dv.getUint32(nAbs, true);
+            const cnrlFlags = dv.getUint32(nAbs + 4, true);
+            const netNameOffset = dv.getUint32(nAbs + 8, true);
+            const deviceNameOffset = dv.getUint32(nAbs + 0x0C, true);
+            const networkProviderType = dv.getUint32(nAbs + 0x10, true);
+
+            const cnrl = {
+              cnrlAbsStart: nAbs,
+              cnrlSize,
+              cnrlFlags,
+              netName: null,
+              deviceName: null,
+              networkProviderType: hex(networkProviderType),
+              netNameAbs: netNameOffset ? (nAbs + netNameOffset) : null,
+              deviceNameAbs: deviceNameOffset ? (nAbs + deviceNameOffset) : null
+            };
+
+            const cnrlStructLen = Math.min(cnrlSize, Math.max(0, linkInfoEnd - nAbs));
+            if (cnrlStructLen > 0) res.provenance.linkInfo["CNRL_Struct"] = { absOff: nAbs, len: cnrlStructLen };
+
+            if (netNameOffset) {
+              const p = nAbs + netNameOffset;
+              if (p < linkInfoEnd) {
+                cnrl.netName = readNullTerminatedAnsi(u8, p, linkInfoEnd).value;
+                const rng = ansiStringRange(u8, p, linkInfoEnd);
+                if (rng.len > 0) res.provenance.linkInfo["CNRL_NetNameString"] = rng;
+              }
+            }
+            if (deviceNameOffset) {
+              const p = nAbs + deviceNameOffset;
+              if (p < linkInfoEnd) {
+                cnrl.deviceName = readNullTerminatedAnsi(u8, p, linkInfoEnd).value;
+                const rng = ansiStringRange(u8, p, linkInfoEnd);
+                if (rng.len > 0) res.provenance.linkInfo["CNRL_DeviceNameString"] = rng;
+              }
+            }
+            detail.commonNetworkRelativeLink = cnrl;
+          }
+        }
+
+        res.sections.push({ name: "LinkInfo", start, end: linkInfoEnd, detail });
+        linkInfoDetail = detail;
+        off = linkInfoEnd;
+      }
+    }
+
+    function readCountedString(off0, label) {
+      if (off0 + 2 > u8.length) return { off: off0, value: null, ok: false };
+      const cch = dv.getUint16(off0, true);
+      let off1 = off0 + 2;
+      let value = null;
+      if (isUnicode) {
+        const byteLen = cch * 2;
+        const end = Math.min(u8.length, off1 + byteLen);
+        value = new TextDecoder("utf-16le", {fatal:false}).decode(u8.slice(off1, end));
+        off1 = end;
+      } else {
+        const end = Math.min(u8.length, off1 + cch);
+        value = new TextDecoder("windows-1252", {fatal:false}).decode(u8.slice(off1, end));
+        off1 = end;
+      }
+      return { off: off1, value, cch, label, ok: true };
+    }
+
+    const strings = [];
+    const stringOrder = [
+      ["NAME_STRING", 0x00000004],
+      ["RELATIVE_PATH", 0x00000008],
+      ["WORKING_DIR", 0x00000010],
+      ["COMMAND_LINE_ARGUMENTS", 0x00000020],
+      ["ICON_LOCATION", 0x00000040]
+    ];
+
+    for (const [label, mask] of stringOrder) {
+      if (linkFlags & mask) {
+        const start = off;
+        const r = readCountedString(off, label);
+        if (!r.ok) { res.warnings.push(`Truncated StringData (${label}).`); break; }
+        off = r.off;
+
+        strings.push({ label, cch: r.cch, value: r.value, start, end: off });
+        res.provenance.stringData[label] = { start, end: off, len: off - start };
+      }
+    }
+
+    res.sections.push({
+      name: "StringData",
+      start: strings.length ? strings[0].start : off,
+      end: strings.length ? strings[strings.length-1].end : off,
+      detail: { isUnicode, strings }
+    });
+
+    const extraStart = off;
+    const extraBlocks = [];
+    let extraIndex = 0;
+
+    while (off + 4 <= u8.length) {
+      const blockSize = dv.getUint32(off, true);
+      if (blockSize === 0) {
+        extraBlocks.push({ start: off, end: off+4, type:"TerminalBlock", size: 4, signature: null, parsed: null, meta: { _block: { absOff: off, len: 4 } } });
+        off += 4;
+        break;
+      }
+      if (blockSize < 8) { res.warnings.push(`ExtraData block size too small (${blockSize}) at ${hex(off)}; stopping parse.`); break; }
+
+      const start = off;
+      const end = Math.min(u8.length, off + blockSize);
+      const parsed = parseExtraBlock(u8, start, end);
+
+      extraBlocks.push({
+        start, end,
+        signature: parsed.signature,
+        size: blockSize,
+        type: parsed.type,
+        parsed: parsed.parsed,
+        meta: parsed.meta,
+        notes: parsed.notes || [],
+        carvedUtf16: parsed.carvedUtf16 || []
+      });
+
+      res.provenance.extraData[String(extraIndex)] = parsed.meta || { _block: { absOff: start, len: Math.max(1, end-start) } };
+      extraIndex++;
+
+      off = end;
+    }
+
+    res.sections.push({ name: "ExtraData", start: extraStart, end: off, detail: { blocks: extraBlocks } });
+
+    const getStr = (label) => strings.find(s => s.label === label)?.value ?? null;
+    const arg = getStr("COMMAND_LINE_ARGUMENTS");
+    const iconLoc = getStr("ICON_LOCATION");
+    const rel = getStr("RELATIVE_PATH");
+    const work = getStr("WORKING_DIR");
+    const nameStr = getStr("NAME_STRING");
+
+    const localBase = linkInfoDetail?.localBasePathUnicode || linkInfoDetail?.localBasePath || null;
+    const suffix = linkInfoDetail?.commonPathSuffixUnicode || linkInfoDetail?.commonPathSuffix || null;
+    const netName = linkInfoDetail?.commonNetworkRelativeLink?.netName || null;
+
+    let best = null;
+    if (localBase && suffix) best = localBase + suffix;
+    else if (localBase) best = localBase;
+    else if (netName && suffix) best = netName + (netName.endsWith("\\") ? "" : "\\") + suffix.replace(/^\\+/, "");
+    else if (netName) best = netName;
+    else if (rel && work) best = work.replace(/[\\\/]+$/,"\\") + rel.replace(/^\\+/,"");
+    else if (rel) best = rel;
+    else if (work) best = work;
+
+    const envVar = extraBlocks.find(b => b.type === "EnvironmentVariableDataBlock")?.parsed || null;
+    const tracker = extraBlocks.find(b => b.type === "TrackerDataBlock")?.parsed || null;
+    const props = extraBlocks.find(b => b.type === "PropertyStoreDataBlock")?.parsed || null;
+    const knownFolder = extraBlocks.find(b => b.type === "KnownFolderDataBlock")?.parsed || null;
+
+    res.dfir.extracted = {
+      localBasePath: localBase,
+      commonPathSuffix: suffix,
+      networkShare: netName,
+      relativePath: rel,
+      workingDir: work,
+      arguments: arg,
+      iconLocation: iconLoc,
+      nameString: nameStr,
+
+      knownFolderID: knownFolder?.knownFolderID ?? null,
+      knownFolderName: knownFolder?.knownFolderName ?? null,
+
+      extra_envTargetUnicode: envVar?.targetUnicode ?? null,
+      extra_envTargetAnsi: envVar?.targetAnsi ?? null,
+      extra_machineID: tracker?.machineID ?? null,
+      extra_propertyHints: props?.stringsHintUtf16le?.slice?.(0,5) ?? null
+    };
+
+    res.dfir.derived = {
+      bestTargetPath: best,
+      showCommand: res.header.showCommandName,
+      hotKey: res.header.hotKeyDecoded.display
+    };
+
+    if (arg && /powershell|cmd\.exe|wscript|cscript|mshta|rundll32|regsvr32/i.test(arg)) res.dfir.suspicious.push("Arguments reference a common LOLBin/command interpreter.");
+    if (arg && /-enc|-encodedcommand|FromBase64String|IEX|Invoke-Expression/i.test(arg)) res.dfir.suspicious.push("Arguments contain patterns often associated with obfuscated PowerShell.");
+    const anyUNC = [localBase, best, rel, work, arg, iconLoc].some(looksUNC);
+    const anyDrive = [localBase, best, rel, work].some(looksDrivePath);
+    if (anyUNC && anyDrive) res.dfir.suspicious.push("Mix of UNC and local drive paths across fields.");
+    if (envVar?.targetUnicode && looksUNC(envVar.targetUnicode)) res.dfir.suspicious.push("EnvironmentVariableDataBlock target appears to be a UNC path.");
+
+    return res;
+  }
+
+  // ---------- UI ----------
+  const $file = document.getElementById("file");
+  const $drop = document.getElementById("drop");
+  const $out = document.getElementById("out");
+  const $alerts = document.getElementById("alerts");
+  const $status = document.getElementById("status");
+  const $copyJson = document.getElementById("copyJson");
+  const $downloadJson = document.getElementById("downloadJson");
+
+  let lastParsed = null;
+  let lastName = "shortcut.lnk";
+
+  function setAlerts(parsed) {
+    $alerts.innerHTML = "";
+    if (parsed.errors?.length) {
+      $alerts.appendChild(el("div", {class:"bad"}, [
+        el("div", {html:`<strong>Errors</strong> (${parsed.errors.length})`}),
+        el("div", {class:"small"}, [parsed.errors.join(" • ")])
+      ]));
+    }
+    if (parsed.warnings?.length) {
+      $alerts.appendChild(el("div", {class:"warn"}, [
+        el("div", {html:`<strong>Warnings</strong> (${parsed.warnings.length})`}),
+        el("div", {class:"small"}, [parsed.warnings.join(" • ")])
+      ]));
+    }
+    if (!parsed.errors?.length) {
+      $alerts.appendChild(el("div", {class:"ok"}, [
+        el("div", {html:`<strong>Parsed</strong> ${parsed.meta.fileSize.toLocaleString()} bytes`}),
+        el("div", {class:"small"}, [`Parsed at ${parsed.meta.parsedAt}`])
+      ]));
+    }
+  }
+
+  let hexUI = null;
+
+  function sectionDetails(title, subtitle, bodyNode, id=null) {
+    const d = el("details", {open:false});
+    if (id) d.id = id;
+    const s = el("summary");
+    s.appendChild(document.createTextNode(title));
+    if (subtitle) s.appendChild(el("span", {class:"muted small", style:"margin-left:8px"}, [subtitle]));
+    d.appendChild(s);
+    d.appendChild(bodyNode);
+    return d;
+  }
+
+  function renderPills(list) {
+    const wrap = el("div");
+    for (const x of (list || [])) wrap.appendChild(el("span", {class:"pill mono small"}, [x]));
+    return wrap;
+  }
+
+  function clickableText(txt, title, onClick) {
+    const span = el("span", {class:"clickable", title}, [txt]);
+    span.addEventListener("click", onClick);
+    return span;
+  }
+
+  function jumpToRange(absOffset, byteLen, label = "") {
+    if (!hexUI || !lastParsed?._bytes) return;
+
+    const startAbs = Math.max(0, absOffset|0);
+    const endAbs = Math.min(lastParsed._bytes.length, startAbs + Math.max(1, byteLen|0));
+
+    hexUI.setSelectedRange({ startAbs, endAbs, label });
+    hexUI.setAnchorAbs(startAbs);
+    hexUI.searchInput.value = "";
+    const pad = 256;
+    const focus = Math.max(0, startAbs - pad);
+
+    hexUI.details.open = true;
+    hexUI.setView("focus", focus);
+    hexUI.refresh();
+    hexUI.details.scrollIntoView({ behavior: "smooth", block: "start" });
+
+    const line = Math.floor((startAbs - focus) / 16);
+    hexUI.hexBox.scrollTop = Math.max(0, line * 18 - 90);
+  }
+
+  function jumpToValueSearch(value) {
+    if (!hexUI || !lastParsed?._bytes) return;
+
+    let needle = String(value ?? "");
+    if (needle.length > 300) needle = needle.slice(0, 300);
+
+    const hit = findNeedle(lastParsed._bytes, needle);
+
+    hexUI.setSelectedRange(null);
+    hexUI.setAnchorAbs(null);
+    hexUI.setHoverRange(null);
+    hexUI.details.open = true;
+    hexUI.searchInput.value = needle;
+
+    if (hit.pos >= 0) {
+      const focus = Math.max(0, hit.pos - 256);
+      hexUI.setView("focus", focus);
+      hexUI.refresh();
+      hexUI.details.scrollIntoView({ behavior: "smooth", block: "start" });
+
+      const line = Math.floor((hit.pos - focus) / 16);
+      hexUI.hexBox.scrollTop = Math.max(0, line * 18 - 90);
+    } else {
+      hexUI.setView("head", 0);
+      hexUI.refresh();
+      hexUI.details.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }
+
+  function buildKnownRanges(parsed) {
+    const ranges = [];
+    const fileLen = parsed?._bytes?.length ?? 0;
+    const clamp = (n) => Math.max(0, Math.min(fileLen, n|0));
+    const pushRange = (name, start, end, section) => {
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return;
+      const s = clamp(start);
+      const e = clamp(end);
+      if (e <= s) return;
+      ranges.push({ name, start: s, end: e, section });
+    };
+
+    for (const [k,m] of Object.entries(parsed.provenance.header || {})) {
+      pushRange(`Header.${k}`, (m.off|0), (m.off|0) + (m.len|0), "Header");
+    }
+
+    for (const [k,m] of Object.entries(parsed.provenance.linkInfo || {})) {
+      if (!m) continue;
+      pushRange(`LinkInfo.${k}`, (m.absOff|0), (m.absOff|0) + (m.len|0), "LinkInfo");
+    }
+
+    for (const [label,m] of Object.entries(parsed.provenance.stringData || {})) {
+      pushRange(`StringData.${label}`, (m.start|0), (m.end|0), "StringData");
+    }
+
+    for (const [idx, meta] of Object.entries(parsed.provenance.extraData || {})) {
+      if (!meta) continue;
+      for (const [k,m] of Object.entries(meta)) {
+        if (!m || !Number.isFinite(m.absOff) || !Number.isFinite(m.len)) continue;
+        const nm = (k === "_block") ? `ExtraData[${idx}].block` : `ExtraData[${idx}].${k}`;
+        pushRange(nm, (m.absOff|0), (m.absOff|0) + (m.len|0), "ExtraData");
+      }
+    }
+
+    ranges.sort((a,b) => (a.end-a.start) - (b.end-b.start) || a.start - b.start);
+    return ranges;
+  }
+
+  function topLevelSectionForOffset(parsed, offAbs) {
+    const sec = (parsed.sections || []).find(s => offAbs >= s.start && offAbs < s.end);
+    return sec ? sec.name : null;
+  }
+
+  function mostSpecificFieldCovering(ranges, absOff) {
+    let best = null;
+    let bestLen = Infinity;
+    for (const r of ranges) {
+      if (absOff < r.start || absOff >= r.end) continue;
+      const len = r.end - r.start;
+      if (len < bestLen || (len === bestLen && best && r.start > best.start)) {
+        best = r;
+        bestLen = len;
+      } else if (len === bestLen && !best) {
+        best = r;
+      }
+    }
+    return best;
+  }
+
+  function renderKV(obj, opts = {}) {
+    const g = el("div", {class:"grid"});
+    const meta = opts.meta || {};
+    const enableStringSearch = !!opts.enableStringSearch;
+
+    for (const [k, v] of Object.entries(obj)) {
+      g.appendChild(el("div", {class:"k"}, [k]));
+      const container = el("div", {class:"v mono"});
+
+      const m = meta[k];
+      const hasMeta = m && Number.isFinite(m.off ?? m.absOff) && Number.isFinite(m.len);
+
+      if (hasMeta) {
+        const abs = (m.absOff ?? m.off) | 0;
+        const txt =
+          v === null ? "null" :
+          (typeof v === "object" ? JSON.stringify(v) : String(v));
+
+        container.appendChild(clickableText(
+          txt,
+          `Jump to ${k} @ ${hex(abs)} (len ${m.len})`,
+          () => jumpToRange(abs, m.len, k)
+        ));
+        container.appendChild(el("span", {class:"muted small", style:"margin-left:10px"}, [`(${hex(abs)} +${m.len})`]));
+        g.appendChild(container);
+        continue;
+      }
+
+      if (typeof v === "string") {
+        const gnorm = normaliseGuidString(v);
+        if (gnorm) {
+          const mapped = formatKnownFolderDisplay(gnorm);
+          if (mapped) {
+            container.appendChild(document.createTextNode(`${v}  →  ${mapped}`));
+            g.appendChild(container);
+            continue;
+          }
+        }
+      }
+
+      if (enableStringSearch && typeof v === "string" && v.length >= 2) {
+        container.appendChild(clickableText(
+          v,
+          "Click to search (ASCII + UTF-16LE) and jump near first match in hex",
+          () => jumpToValueSearch(v)
+        ));
+        g.appendChild(container);
+        continue;
+      }
+
+      if (v === null) container.appendChild(document.createTextNode("null"));
+      else if (typeof v === "object") container.appendChild(el("span", {}, [JSON.stringify(v, null, 2)]));
+      else container.appendChild(document.createTextNode(String(v)));
+      g.appendChild(container);
+    }
+    return g;
+  }
+
+  function renderLinkInfoJumpTable(linkInfoDetail) {
+    if (!linkInfoDetail) return el("div", {class:"muted small"}, ["No LinkInfo present."]);
+
+    const base = linkInfoDetail.linkInfoAbsStart;
+    const liEnd = linkInfoDetail.linkInfoAbsEnd;
+    const offsets = linkInfoDetail.offsets || {};
+    const rows = [];
+
+    rows.push({ name: "LinkInfo (entire)", abs: base, len: Math.max(1, liEnd - base), note: `Range ${hex(base)}–${hex(liEnd)}` });
+
+    if (linkInfoDetail.volumeID?.volAbsStart && linkInfoDetail.volumeID?.volSize) {
+      rows.push({ name: "VolumeID (struct)", abs: linkInfoDetail.volumeID.volAbsStart, len: linkInfoDetail.volumeID.volSize, note: `Size ${linkInfoDetail.volumeID.volSize}` });
+    } else if (offsets.volumeIDOffset) {
+      rows.push({ name: "VolumeIDOffset (start only)", abs: base + offsets.volumeIDOffset, len: 16, note: "No parsed size; highlighting 16 bytes" });
+    }
+
+    if (linkInfoDetail.commonNetworkRelativeLink?.cnrlAbsStart && linkInfoDetail.commonNetworkRelativeLink?.cnrlSize) {
+      rows.push({ name: "CommonNetworkRelativeLink (struct)", abs: linkInfoDetail.commonNetworkRelativeLink.cnrlAbsStart, len: linkInfoDetail.commonNetworkRelativeLink.cnrlSize, note: `Size ${linkInfoDetail.commonNetworkRelativeLink.cnrlSize}` });
+    } else if (offsets.commonNetworkRelativeLinkOffset) {
+      rows.push({ name: "CommonNetworkRelativeLinkOffset (start only)", abs: base + offsets.commonNetworkRelativeLinkOffset, len: 20, note: "No parsed size; highlighting 20 bytes" });
+    }
+
+    const strTargets = [
+      ["LocalBasePathOffset", offsets.localBasePathOffset],
+      ["CommonPathSuffixOffset", offsets.commonPathSuffixOffset],
+      ["LocalBasePathOffsetUnicode", offsets.localBasePathOffsetUnicode],
+      ["CommonPathSuffixOffsetUnicode", offsets.commonPathSuffixOffsetUnicode],
+    ];
+    for (const [n, rel] of strTargets) {
+      if (!rel) continue;
+      rows.push({ name: n, abs: base + rel, len: 64, note: "Start of string; highlighting 64 bytes" });
+    }
+
+    const cnrl = linkInfoDetail.commonNetworkRelativeLink;
+    if (cnrl?.netNameAbs) rows.push({ name: "CNRL NetName (start)", abs: cnrl.netNameAbs, len: 96, note: "Start of net name; highlighting 96 bytes" });
+    if (cnrl?.deviceNameAbs) rows.push({ name: "CNRL DeviceName (start)", abs: cnrl.deviceNameAbs, len: 96, note: "Start of device name; highlighting 96 bytes" });
+
+    const t = el("table", {class:"small"});
+    t.appendChild(el("thead", {}, [el("tr", {}, [
+      el("th", {}, ["Field/structure"]),
+      el("th", {}, ["Absolute offset (click)"]),
+      el("th", {}, ["Length highlighted"]),
+      el("th", {}, ["Notes"])
+    ])]));
+    const tb = el("tbody");
+
+    const fileLen = lastParsed?._bytes?.length ?? 0;
+    for (const r of rows) {
+      const valid = Number.isFinite(r.abs) && r.abs >= 0 && r.abs < fileLen;
+      const absCell = el("td", {class:"mono"});
+      if (valid) absCell.appendChild(clickableText(hex(r.abs), "Jump and highlight this range", () => jumpToRange(r.abs, r.len, r.name)));
+      else absCell.appendChild(document.createTextNode("n/a"));
+
+      tb.appendChild(el("tr", {}, [
+        el("td", {}, [r.name]),
+        absCell,
+        el("td", {class:"mono"}, [String(r.len)]),
+        el("td", {class:"mono"}, [r.note || ""])
+      ]));
+    }
+
+    t.appendChild(tb);
+    return t;
+  }
+
+  function renderExtraDataTable(blocks) {
+    if (!blocks?.length) return el("div", {class:"muted small"}, ["No ExtraData blocks parsed."]);
+    const t = el("table", {class:"small"});
+    t.appendChild(el("thead", {}, [el("tr", {}, [
+      el("th", {}, ["Block"]),
+      el("th", {}, ["Type (click highlights block)"]),
+      el("th", {}, ["Start (click)"]),
+      el("th", {}, ["Size"]),
+      el("th", {}, ["Interesting"])
+    ])]));
+    const tb = el("tbody");
+
+    for (let i=0;i<blocks.length;i++) {
+      const b = blocks[i];
+      const size = Math.max(1, (b.end - b.start));
+
+      let interesting = "";
+      if (b.type === "EnvironmentVariableDataBlock") {
+        interesting = (b.parsed?.targetUnicode || b.parsed?.targetAnsi || "").slice(0,120);
+      } else if (b.type === "TrackerDataBlock") {
+        interesting = `MachineID=${b.parsed?.machineID || ""}`.trim();
+      } else if (b.type === "KnownFolderDataBlock") {
+        interesting = (b.parsed?.knownFolderName || b.parsed?.knownFolderID || "").slice(0,120);
+      } else if (b.type === "PropertyStoreDataBlock") {
+        interesting = (b.parsed?.stringsHintUtf16le?.[0] || "").slice(0,120);
+      } else if (b.carvedUtf16?.length) {
+        interesting = b.carvedUtf16[0].slice(0,120);
+      }
+
+      const blockCell = el("td", {class:"mono"}, [
+        clickableText(`#${i}`, "Jump and highlight the full block", () => jumpToRange(b.start, size, `ExtraData #${i}`))
+      ]);
+      const typeCell = el("td", {class:"mono"}, [
+        clickableText(b.type || "Unknown", "Jump and highlight the full block", () => jumpToRange(b.start, size, `ExtraData #${i}`))
+      ]);
+      const startCell = el("td", {class:"mono"}, [
+        clickableText(hex(b.start), "Jump and highlight the full block", () => jumpToRange(b.start, size, `ExtraData #${i}`))
+      ]);
+
+      tb.appendChild(el("tr", {}, [
+        blockCell,
+        typeCell,
+        startCell,
+        el("td", {class:"mono"}, [String(b.size ?? size)]),
+        el("td", {class:"mono"}, [interesting || ""])
+      ]));
+    }
+
+    t.appendChild(tb);
+    return t;
+  }
+
+  function renderExtraBlockDetails(blocks) {
+    const wrap = el("div");
+    if (!blocks?.length) return el("div",{class:"muted small"},["No ExtraData blocks."]);
+
+    for (let i=0;i<blocks.length;i++) {
+      const b = blocks[i];
+      const d = el("details", {open:false});
+      const sum = el("summary", {}, [
+        `ExtraData #${i} `,
+        el("span",{class:"badge mono small", style:"margin-left:8px"},[b.type || "Unknown"]),
+        el("span",{class:"muted small", style:"margin-left:8px"},[`@ ${hex(b.start)} size ${b.size ?? (b.end-b.start)}`]),
+      ]);
+      d.appendChild(sum);
+
+      const content = el("div");
+      const meta = b.meta || {};
+
+      const meta2 = { ...meta };
+      if (meta2._block && Number.isFinite(meta2._block.absOff) && Number.isFinite(meta2._block.len)) {
+        meta2.type = meta2._block;
+        meta2.signature = meta2._block;
+        meta2.blockSize = meta2._block;
+        meta2.start = meta2._block;
+        meta2.end = meta2._block;
+      }
+
+      const data = {
+        type: b.type,
+        signature: b.signature,
+        blockSize: b.size,
+        start: hex(b.start),
+        end: hex(b.end),
+        ...(b.parsed ? b.parsed : {})
+      };
+
+      content.appendChild(renderKV(data, { meta: meta2, enableStringSearch: true }));
+
+      if (b.notes?.length) content.appendChild(el("div",{class:"warn"},[
+        el("div",{html:"<strong>Notes</strong>"}),
+        el("ul",{}, b.notes.map(x=>el("li",{},[x])))
+      ]));
+
+      if (b.carvedUtf16?.length) {
+        content.appendChild(el("div",{class:"small muted", style:"margin-top:8px"},["Heuristic UTF-16LE strings found in this block:"]));
+        const ul = el("ul", {class:"small"});
+        for (const s of b.carvedUtf16) {
+          ul.appendChild(el("li", {class:"mono"}, [
+            clickableText(s, "Search (ASCII + UTF-16LE) and jump near first match", () => jumpToValueSearch(s))
+          ]));
+        }
+        content.appendChild(ul);
+      }
+
+      d.appendChild(content);
+      wrap.appendChild(d);
+    }
+    return wrap;
+  }
+
+  // Global listeners installed once (prevents stacking on re-render)
+  let __hexGlobalListenersInstalled = false;
+
+  function render(parsed) {
+    document.querySelectorAll(".hx-tip").forEach(n => n.remove());
+    document.querySelectorAll(".hx-menu").forEach(n => n.remove());
+
+    $out.innerHTML = "";
+    hexUI = null;
+
+    const knownRanges = buildKnownRanges(parsed);
+
+    // Hover tooltip
+    const tip = el("div", { class: "hx-tip", style: "display:none;" });
+    document.body.appendChild(tip);
+
+    // Right-click menu 
+    let menu = null;
+    let menuOpen = false;
+
+    function closeMenu() {
+      if (menu) { menu.remove(); menu = null; }
+      menuOpen = false;
+    }
+
+    function openMenu(x, y, items, titleText) {
+      closeMenu();
+      menuOpen = true;
+
+      menu = el("div", { class: "hx-menu" });
+
+      // Prevent interactions within the menu from bubbling up and closing it.
+      menu.addEventListener("mousedown", (e) => { e.stopPropagation(); });
+      menu.addEventListener("click", (e) => { e.stopPropagation(); });
+      menu.addEventListener("contextmenu", (e) => { e.preventDefault(); e.stopPropagation(); });
+
+      menu.appendChild(el("div", { class: "hint" }, [titleText]));
+
+      for (const it of items) {
+        if (it === "sep") {
+          menu.appendChild(el("div", { class: "sep" }));
+          continue;
+        }
+        const btn = el("button", {}, [it.label]);
+        btn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          if (it.label === "Cancel") { closeMenu(); return; }
+          const ok = await copyTextToClipboard(it.getText());
+          $status.textContent = ok ? `Copied: ${it.label}` : "Copy failed (clipboard blocked).";
+          closeMenu();
+        });
+        menu.appendChild(btn);
+      }
+
+      document.body.appendChild(menu);
+
+      const pad = 10;
+      const r = menu.getBoundingClientRect();
+      const nx = Math.min(window.innerWidth - r.width - pad, x);
+      const ny = Math.min(window.innerHeight - r.height - pad, y);
+      menu.style.left = Math.max(pad, nx) + "px";
+      menu.style.top  = Math.max(pad, ny) + "px";
+    }
+
+    const headerMeta = {};
+    for (const [k,m] of Object.entries(parsed.provenance.header || {})) headerMeta[k] = { off: m.off, len: m.len };
+
+    const hdr = el("div");
+    hdr.appendChild(el("h2", {style:"margin:14px 0 8px;font-size:16px"}, ["ShellLinkHeader (click jumps to bytes)"]));
+    hdr.appendChild(renderKV({
+      headerSize: parsed.header.headerSize,
+      linkCLSID: parsed.header.linkCLSID,
+      linkFlags: hex(parsed.header.linkFlags),
+      fileAttributes: hex(parsed.header.fileAttributes),
+      creationTimeUtc: parsed.header.creationTimeUtc,
+      accessTimeUtc: parsed.header.accessTimeUtc,
+      writeTimeUtc: parsed.header.writeTimeUtc,
+      fileSize: parsed.header.fileSize,
+      iconIndex: parsed.header.iconIndex,
+      showCommand: `${parsed.header.showCommand} (${parsed.header.showCommandName})`,
+      showCommandName: parsed.header.showCommandName,
+      hotKey: `${hexU16(parsed.header.hotKey)} (${parsed.header.hotKeyDecoded.display})`,
+      hotKeyDecoded: parsed.header.hotKeyDecoded.display
+    }, { meta: headerMeta, enableStringSearch: false }));
+    hdr.appendChild(el("div", {style:"margin-top:10px"}, [
+      el("div", {class:"small muted"}, ["LinkFlags decoded:"]),
+      renderPills(parsed.header.flagsDecoded),
+      el("div", {class:"small muted", style:"margin-top:6px"}, ["FileAttributes decoded:"]),
+      renderPills(parsed.header.fileAttributesDecoded)
+    ]));
+    $out.appendChild(sectionDetails("Header", "ShellLinkHeader (offset 0x00000000)", hdr));
+
+    const dfirDerivedMeta = {
+      showCommand: { off: 0x3C, len: 4 },
+      hotKey:      { off: 0x40, len: 2 }
+    };
+
+    const df = el("div");
+    df.appendChild(el("h2", {style:"margin:14px 0 8px;font-size:16px"}, ["DFIR quick view"]));
+    const left = el("div", {}, [
+      el("div", {class:"small muted"}, ["Extracted strings (click searches ASCII + UTF-16LE)"]),
+      renderKV(parsed.dfir.extracted, { enableStringSearch: true })
+    ]);
+    const right = el("div", {}, [
+      el("div", {class:"small muted"}, ["Derived fields (offset-backed where possible)"]),
+      renderKV(parsed.dfir.derived, { enableStringSearch: true, meta: dfirDerivedMeta })
+    ]);
+    df.appendChild(el("div", {class:"twoCol", style:"margin-top:10px"}, [left, right]));
+    if (parsed.dfir.suspicious?.length) {
+      df.appendChild(el("div", {class:"warn"}, [
+        el("div", {html:"<strong>Potentially interesting</strong>"}),
+        el("ul", {}, parsed.dfir.suspicious.map(x => el("li", {}, [x])))
+      ]));
+    }
+    $out.appendChild(sectionDetails("DFIR quick view", "Human-friendly extraction", df));
+
+    const linkInfoDetail = parsed.sections.find(s => s.name === "LinkInfo")?.detail ?? null;
+    const li = el("div");
+    li.appendChild(el("div", {class:"small muted"}, ["Click a row to jump and highlight that structure/range in the hex view."]));
+    li.appendChild(renderLinkInfoJumpTable(linkInfoDetail));
+    $out.appendChild(sectionDetails("LinkInfo jump table", "Offsets and structure ranges", li));
+
+    const sdSec = parsed.sections.find(s => s.name === "StringData")?.detail ?? null;
+    const sdWrap = el("div");
+    if (sdSec?.strings?.length) {
+      sdWrap.appendChild(el("div", {class:"small muted"}, [
+        `Encoding: ${sdSec.isUnicode ? "UTF-16LE" : "ANSI (Windows-1252)"}. Click ranges to jump & highlight exact bytes.`
+      ]));
+      const rows = el("table", {class:"small"});
+      rows.appendChild(el("thead", {}, [el("tr", {}, [
+        el("th", {}, ["Label"]),
+        el("th", {}, ["cch"]),
+        el("th", {}, ["Value (search)"]),
+        el("th", {}, ["Range (jump exact)"])
+      ])]));
+      const tb = el("tbody");
+      for (const st of sdSec.strings) {
+        const vCell = el("td", {class:"mono"});
+        if (st.value && st.value.length >= 2) vCell.appendChild(clickableText(st.value, "Search (ASCII + UTF-16LE) and jump near first match", () => jumpToValueSearch(st.value)));
+        else vCell.appendChild(document.createTextNode(String(st.value ?? "null")));
+
+        const len = Math.max(1, st.end - st.start);
+        const rCell = el("td", {class:"mono"});
+        rCell.appendChild(clickableText(`${hex(st.start)}–${hex(st.end)} (len ${len})`, "Jump and highlight this field bytes", () => jumpToRange(st.start, len, st.label)));
+
+        tb.appendChild(el("tr", {}, [
+          el("td", {}, [st.label]),
+          el("td", {class:"mono"}, [String(st.cch)]),
+          vCell,
+          rCell
+        ]));
+      }
+      rows.appendChild(tb);
+      sdWrap.appendChild(rows);
+    } else {
+      sdWrap.appendChild(el("div", {class:"muted small"}, ["No StringData fields present."]));
+    }
+    $out.appendChild(sectionDetails("StringData", "Search strings or jump to exact bytes", sdWrap));
+
+    const extraBlocks = parsed.sections.find(s => s.name === "ExtraData")?.detail?.blocks ?? [];
+    const ex = el("div");
+    ex.appendChild(el("div", {class:"small muted"}, ["Click a row (block/type/start) to jump and highlight the full block. Parsed blocks expand below."]));
+    ex.appendChild(renderExtraDataTable(extraBlocks));
+    ex.appendChild(el("div", {style:"margin-top:10px"}));
+    ex.appendChild(renderExtraBlockDetails(extraBlocks));
+    $out.appendChild(sectionDetails("ExtraData blocks", "Key block parsing + byte jumps", ex));
+
+    // ---------- Coloured hexdump ----------
+    const raw = el("div");
+    const toolbar = el("div", {class:"toolbar"});
+    const search = el("input", {type:"search", id:"hexSearch", placeholder:"Search (highlights ASCII + UTF-16LE)…"});
+    const chk = el("label", {class:"toggle"}, [
+      el("input", {type:"checkbox", id:"hexHit"}),
+      el("span", {class:"small"}, ["Highlight hits"])
+    ]);
+    const headBtn = el("button", {id:"viewHead"}, ["Head"]);
+    const tailBtn = el("button", {id:"viewTail"}, ["Tail"]);
+    const focusBtn = el("button", {id:"viewFocus", disabled:true}, ["Focus"]);
+    const clearSelBtn = el("button", {id:"clearSel"}, ["Clear selection"]);
+    const plusBtn = el("button", {id:"moreBytes"}, ["More bytes"]);
+    const minusBtn = el("button", {id:"lessBytes"}, ["Fewer bytes"]);
+
+    toolbar.appendChild(search);
+    toolbar.appendChild(chk);
+    toolbar.appendChild(headBtn);
+    toolbar.appendChild(tailBtn);
+    toolbar.appendChild(focusBtn);
+    toolbar.appendChild(clearSelBtn);
+    toolbar.appendChild(minusBtn);
+    toolbar.appendChild(plusBtn);
+    raw.appendChild(toolbar);
+
+    const hexBox = el("div", {id:"hexBox"});
+    raw.appendChild(hexBox);
+
+    const rawDetails = sectionDetails("Coloured hexdump", "Search hits (yellow), selected ranges (cyan), hovered field (purple), drag-to-select bytes, right-click to copy", raw, "rawDetails");
+    $out.appendChild(rawDetails);
+
+    document.getElementById("hexHit").checked = true;
+
+    let view = "head";
+    let focusStart = 0;
+    let bytesToShow = 8192;
+    let selectedRange = null;
+    let hoverRange = null;
+    let anchorAbs = null;
+
+    let dragOn = false;
+    let dragAnchor = null;
+
+    function setSelectedFromTwo(a, b, label="Selection") {
+      const lo = Math.min(a,b), hi = Math.max(a,b);
+      selectedRange = { startAbs: lo, endAbs: hi+1, label };
+      anchorAbs = dragAnchor;
+    }
+
+    function selectionInfoNode() {
+      const line = el("div", {class:"small muted", style:"margin-bottom:8px"});
+      if (!selectedRange) { line.textContent = "Selected: none (drag in hex, or right-click a byte)"; return line; }
+      const len = selectedRange.endAbs - selectedRange.startAbs;
+      line.textContent = `Selected: ${selectedRange.label || "range"} ${hex(selectedRange.startAbs)}–${hex(selectedRange.endAbs)} (len ${len}) — right-click to copy`;
+      return line;
+    }
+
+    let rafPending = false;
+    let rafLast = 0;
+    function scheduleRefresh(preserveScroll=true) {
+      if (menuOpen) return; // dont rerender while context menu is open
+      const now = performance.now();
+      if (rafPending) return;
+      if (now - rafLast < 33) return;
+      rafPending = true;
+      requestAnimationFrame(() => {
+        rafPending = false;
+        rafLast = performance.now();
+        refreshHex(preserveScroll);
+      });
+    }
+
+    function clampTip(x, y) {
+      const pad = 12;
+      const w = tip.offsetWidth || 260;
+      const h = tip.offsetHeight || 60;
+      const nx = Math.min(window.innerWidth - w - pad, x + 14);
+      const ny = Math.min(window.innerHeight - h - pad, y + 14);
+      return { x: Math.max(pad, nx), y: Math.max(pad, ny) };
+    }
+
+    function showTip(text, clientX, clientY) {
+      tip.textContent = text;
+      tip.style.display = "block";
+      const pos = clampTip(clientX, clientY);
+      tip.style.left = pos.x + "px";
+      tip.style.top = pos.y + "px";
+    }
+
+    function hideTip() { tip.style.display = "none"; }
+
+    function refreshHex(scrollPreserve=true) {
+      const prevScroll = hexBox.scrollTop;
+      hexBox.innerHTML = "";
+
+      const needle = search.value || "";
+      const highlight = document.getElementById("hexHit").checked;
+
+      hexBox.appendChild(selectionInfoNode());
+
+      let hexNode = null;
+
+      if (view === "head") {
+        focusBtn.disabled = true;
+        const len = Math.min(bytesToShow, parsed._bytes.length);
+        hexBox.appendChild(el("div", {class:"small muted"}, [`File head (first ${len} bytes):`]));
+        hexNode = renderHexColour(parsed._bytes, 0, len, {
+          maxBytes: bytesToShow,
+          search: needle,
+          highlightHits: highlight,
+          selectedRange,
+          hoverRange,
+          anchorAbs,
+          hexId: "hexRendered"
+        });
+      } else if (view === "tail") {
+        focusBtn.disabled = true;
+        const start = Math.max(0, parsed._bytes.length - bytesToShow);
+        const len = Math.min(bytesToShow, parsed._bytes.length);
+        hexBox.appendChild(el("div", {class:"small muted"}, [`File tail (last ${len} bytes):`]));
+        hexNode = renderHexColour(parsed._bytes, start, len, {
+          maxBytes: bytesToShow,
+          search: needle,
+          highlightHits: highlight,
+          selectedRange,
+          hoverRange,
+          anchorAbs,
+          hexId: "hexRendered"
+        });
+      } else {
+        focusBtn.disabled = false;
+        const start = Math.max(0, Math.min(focusStart, Math.max(0, parsed._bytes.length - 1)));
+        const len = Math.min(bytesToShow, parsed._bytes.length - start);
+        hexBox.appendChild(el("div", {class:"small muted"}, [`Focus view @ ${hex(start)} (showing ${len} bytes):`]));
+        hexNode = renderHexColour(parsed._bytes, start, len, {
+          maxBytes: bytesToShow,
+          search: needle,
+          highlightHits: highlight,
+          selectedRange,
+          hoverRange,
+          anchorAbs,
+          hexId: "hexRendered"
+        });
+      }
+
+      hexBox.appendChild(hexNode);
+      attachHexSelectionAndHoverHandlers(hexNode);
+
+      if (scrollPreserve) hexBox.scrollTop = prevScroll;
+    }
+
+    function setView(mode, start=0) {
+      view = mode;
+      if (mode === "focus") focusStart = start;
+      refreshHex();
+    }
+
+    headBtn.addEventListener("click", () => setView("head", 0));
+    tailBtn.addEventListener("click", () => setView("tail", 0));
+    focusBtn.addEventListener("click", () => setView("focus", focusStart));
+    plusBtn.addEventListener("click", () => { bytesToShow = Math.min(65536, bytesToShow * 2); refreshHex(); });
+    minusBtn.addEventListener("click", () => { bytesToShow = Math.max(2048, Math.floor(bytesToShow / 2)); refreshHex(); });
+
+    search.addEventListener("input", () => { selectedRange = null; anchorAbs = null; hoverRange = null; closeMenu(); refreshHex(); });
+    document.getElementById("hexHit").addEventListener("change", () => { closeMenu(); refreshHex(); });
+    clearSelBtn.addEventListener("click", () => { selectedRange = null; anchorAbs = null; hoverRange = null; closeMenu(); refreshHex(); });
+
+    function attachHexSelectionAndHoverHandlers(hexNode) {
+      const getAbsFromTarget = (t) => {
+        if (!t || !t.dataset) return null;
+        const s = t.dataset.abs;
+        if (!s) return null;
+        const n = Number(s);
+        return Number.isFinite(n) ? n : null;
+      };
+
+      const updateHover = (abs, clientX, clientY) => {
+        const best = mostSpecificFieldCovering(knownRanges, abs);
+        const section = topLevelSectionForOffset(parsed, abs) || "(unknown)";
+
+        const nextHover = best
+          ? { startAbs: best.start, endAbs: best.end, label: best.name }
+          : null;
+
+        const changed = (!hoverRange && nextHover) ||
+                        (hoverRange && !nextHover) ||
+                        (hoverRange && nextHover &&
+                          (hoverRange.startAbs !== nextHover.startAbs ||
+                           hoverRange.endAbs !== nextHover.endAbs ||
+                           hoverRange.label !== nextHover.label));
+
+        hoverRange = nextHover;
+
+        if (best) {
+          const len = best.end - best.start;
+          const text = [
+            `Offset: ${hex(abs)}`,
+            `Section: ${section}`,
+            `Field: ${best.name}`,
+            `Range: ${hex(best.start)} +${len}`
+          ].join("\n");
+          showTip(text, clientX, clientY);
+        } else {
+          const text = [
+            `Offset: ${hex(abs)}`,
+            `Section: ${section}`,
+            `Field: (none)`
+          ].join("\n");
+          showTip(text, clientX, clientY);
+        }
+
+        if (changed) scheduleRefresh(false);
+      };
+
+      const onDown = (e) => {
+        if (e.button === 2) return;
+        closeMenu();
+        const abs = getAbsFromTarget(e.target);
+        if (abs === null) return;
+        e.preventDefault();
+
+        dragOn = true;
+        dragAnchor = abs;
+        anchorAbs = abs;
+        setSelectedFromTwo(abs, abs, "Selection");
+        scheduleRefresh(true);
+      };
+
+      const onOver = (e) => {
+        const abs = getAbsFromTarget(e.target);
+        if (abs === null) return;
+
+        updateHover(abs, e.clientX, e.clientY);
+
+        if (!dragOn) return;
+        setSelectedFromTwo(dragAnchor, abs, "Selection");
+        scheduleRefresh(false);
+      };
+
+      const onMove = (e) => {
+        const abs = getAbsFromTarget(e.target);
+        if (abs === null) return;
+        updateHover(abs, e.clientX, e.clientY);
+      };
+
+      const onLeave = () => {
+        hoverRange = null;
+        hideTip();
+        // dont close the menu on leaving the hex region
+        scheduleRefresh(false);
+      };
+
+      const onContextMenu = (e) => {
+        const abs = getAbsFromTarget(e.target);
+        if (abs === null) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        // stop any drag and hide tooltip; keep selection if present
+        dragOn = false;
+        hideTip();
+
+        const u8 = parsed._bytes;
+
+        let startAbs, endAbs, label;
+
+        const hasSelection =
+          selectedRange &&
+          Number.isFinite(selectedRange.startAbs) &&
+          Number.isFinite(selectedRange.endAbs) &&
+          selectedRange.endAbs > selectedRange.startAbs;
+
+        if (hasSelection) {
+          startAbs = selectedRange.startAbs;
+          endAbs = selectedRange.endAbs;
+          label = selectedRange.label || "Selection";
+        } else {
+          startAbs = abs;
+          endAbs = Math.min(u8.length, abs + 1);
+          label = "Byte";
+          selectedRange = { startAbs, endAbs, label };
+          anchorAbs = abs;
+          scheduleRefresh(false);
+        }
+
+        const title = `${label}: ${hex(startAbs)}–${hex(endAbs)} (${endAbs - startAbs} bytes)`;
+
+        openMenu(e.clientX, e.clientY, [
+          { label: "Copy hexdump (offset + hex + ASCII)", getText: () => formatCopyPayload(u8, startAbs, endAbs, "hexdump") },
+          { label: "Copy hex bytes (AA BB CC)",          getText: () => formatCopyPayload(u8, startAbs, endAbs, "hex") },
+          { label: "Copy C style (\\xAA\\xBB...)",       getText: () => formatCopyPayload(u8, startAbs, endAbs, "c") },
+          "sep",
+          { label: "Cancel", getText: () => "" }
+        ], title);
+      };
+
+      hexNode.addEventListener("mousedown", onDown);
+      hexNode.addEventListener("mouseover", onOver);
+      hexNode.addEventListener("mousemove", onMove);
+      hexNode.addEventListener("mouseleave", onLeave);
+      hexNode.addEventListener("contextmenu", onContextMenu);
+
+      if (!__hexGlobalListenersInstalled) {
+        __hexGlobalListenersInstalled = true;
+
+        window.addEventListener("mouseup", () => { dragOn = false; }, { passive: true });
+
+        window.addEventListener("mouseleave", () => {
+          hoverRange = null;
+          hideTip();
+          closeMenu();
+          scheduleRefresh(false);
+        }, { passive: true });
+
+        window.addEventListener("click", closeMenu, { passive: true });
+        window.addEventListener("scroll", closeMenu, { passive: true, capture: true });
+        window.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); }, { passive: true });
+      }
+    }
+
+    hexUI = {
+      details: rawDetails,
+      searchInput: search,
+      hexBox,
+      setView,
+      refresh: refreshHex,
+      setSelectedRange: (r) => { selectedRange = r; },
+      setHoverRange: (r) => { hoverRange = r; },
+      setAnchorAbs: (a) => { anchorAbs = a; },
+    };
+
+    refreshHex();
+  }
+
+  async function loadFile(file) {
+    lastName = file?.name || "shortcut.lnk";
+    $status.textContent = `${lastName} (${file.size.toLocaleString()} bytes)`;
+    const buf = await file.arrayBuffer();
+    const parsed = parseLnk(buf);
+    lastParsed = parsed;
+    setAlerts(parsed);
+    render(parsed);
+    $copyJson.disabled = false;
+    $downloadJson.disabled = false;
+  }
+
+  $file.addEventListener("change", async () => {
+    if ($file.files && $file.files[0]) await loadFile($file.files[0]);
+  });
+
+  $drop.addEventListener("dragover", (e) => { e.preventDefault(); $drop.classList.add("drag"); });
+  $drop.addEventListener("dragleave", () => $drop.classList.remove("drag"));
+  $drop.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    $drop.classList.remove("drag");
+    const f = e.dataTransfer.files?.[0];
+    if (f) await loadFile(f);
+  });
+
+  $copyJson.addEventListener("click", async () => {
+    if (!lastParsed) return;
+    const clone = JSON.parse(JSON.stringify(lastParsed));
+    delete clone._bytes;
+    const txt = JSON.stringify(clone, null, 2);
+    await navigator.clipboard.writeText(txt);
+    $status.textContent = `Copied JSON for ${lastName}`;
+  });
+
+  $downloadJson.addEventListener("click", () => {
+    if (!lastParsed) return;
+    const clone = JSON.parse(JSON.stringify(lastParsed));
+    delete clone._bytes;
+    const txt = JSON.stringify(clone, null, 2);
+    const blob = new Blob([txt], {type:"application/json"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${lastName}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+})();
+</script>
+</body>
+</html>
