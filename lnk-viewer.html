@@ -1228,8 +1228,13 @@
           : null;
 
         out.parsed = { targetAnsi: tAnsi || null, targetUnicode: tUni || null };
-        meta.targetAnsi = { absOff: ansiOff, len: Math.min(ansiLen, absEnd - ansiOff) };
-        meta.targetUnicode = { absOff: uniOff, len: Math.min(uniLen, absEnd - uniOff) };
+
+        // Link displayed targets to their actual string bytes rather than the
+        // entire fixed-width fields, making target-to-hex navigation precise.
+        const ansiRange = ansiStringRange(u8, ansiOff, Math.min(absEnd, ansiOff + ansiLen));
+        const unicodeRange = utf16leStringRange(u8, uniOff, Math.min(absEnd, uniOff + uniLen));
+        meta.targetAnsi = { absOff: ansiOff, len: Math.max(1, ansiRange.len) };
+        meta.targetUnicode = { absOff: uniOff, len: Math.max(2, unicodeRange.len) };
       }
       else if (sig === EXTRA_SIG.TrackerDataBlock) {
         const lengthOff = absStart + 8;
@@ -1496,14 +1501,18 @@
     res.header.hotKeyDecoded = decodeHotKey(hotKey);
 
     const FLAGS = {
-      HasLinkTargetIDList: 0x00000001,
-      HasLinkInfo:         0x00000002,
-      HasName:             0x00000004,
-      HasRelativePath:     0x00000008,
-      HasWorkingDir:       0x00000010,
-      HasArguments:        0x00000020,
-      HasIconLocation:     0x00000040,
-      IsUnicode:           0x00000080
+      HasLinkTargetIDList:      0x00000001,
+      HasLinkInfo:              0x00000002,
+      HasName:                  0x00000004,
+      HasRelativePath:          0x00000008,
+      HasWorkingDir:            0x00000010,
+      HasArguments:             0x00000020,
+      HasIconLocation:          0x00000040,
+      IsUnicode:                0x00000080,
+      ForceNoLinkInfo:          0x00000100,
+      HasExpString:             0x00000200,
+      DisableLinkPathTracking:  0x00100000,
+      PreferEnvironmentPath:    0x02000000
     };
 
     const FILEATTR = {
@@ -1807,16 +1816,96 @@
     const suffix = linkInfoDetail?.commonPathSuffixUnicode || linkInfoDetail?.commonPathSuffix || null;
     const netName = linkInfoDetail?.commonNetworkRelativeLink?.netName || null;
 
-    let best = null;
-    if (localBase && suffix) best = localBase + suffix;
-    else if (localBase) best = localBase;
-    else if (netName && suffix) best = netName + (netName.endsWith("\\") ? "" : "\\") + suffix.replace(/^\\+/, "");
-    else if (netName) best = netName;
-    else if (rel && work) best = work.replace(/[\\\/]+$/,"\\") + rel.replace(/^\\+/,"");
-    else if (rel) best = rel;
-    else if (work) best = work;
+    const envBlock = extraBlocks.find(b => b.type === "EnvironmentVariableDataBlock") || null;
+    const envVar = envBlock?.parsed || null;
+    const envTargetUnicode = typeof envVar?.targetUnicode === "string" && envVar.targetUnicode.trim()
+      ? envVar.targetUnicode.trim()
+      : null;
+    const envTargetAnsi = typeof envVar?.targetAnsi === "string" && envVar.targetAnsi.trim()
+      ? envVar.targetAnsi.trim()
+      : null;
+    const envTarget = envTargetUnicode || envTargetAnsi || null;
 
-    const envVar = extraBlocks.find(b => b.type === "EnvironmentVariableDataBlock")?.parsed || null;
+    const hasExpString = (linkFlags & FLAGS.HasExpString) !== 0;
+    const disableLinkPathTracking = (linkFlags & FLAGS.DisableLinkPathTracking) !== 0;
+    const preferEnvironmentPath = (linkFlags & FLAGS.PreferEnvironmentPath) !== 0;
+
+    let structuredTarget = null;
+    let structuredTargetSource = null;
+    if (localBase && suffix) {
+      structuredTarget = localBase + suffix;
+      structuredTargetSource = "LinkInfo local base path + common path suffix";
+    } else if (localBase) {
+      structuredTarget = localBase;
+      structuredTargetSource = "LinkInfo local base path";
+    } else if (netName && suffix) {
+      structuredTarget = netName + (netName.endsWith("\\") ? "" : "\\") + suffix.replace(/^\\+/, "");
+      structuredTargetSource = "LinkInfo network share + common path suffix";
+    } else if (netName) {
+      structuredTarget = netName;
+      structuredTargetSource = "LinkInfo network share";
+    } else if (rel && work) {
+      structuredTarget = work.replace(/[\\\/]+$/, "\\") + rel.replace(/^\\+/, "");
+      structuredTargetSource = "StringData working directory + relative path";
+    } else if (rel) {
+      structuredTarget = rel;
+      structuredTargetSource = "StringData relative path";
+    } else if (work) {
+      structuredTarget = work;
+      structuredTargetSource = "StringData working directory";
+    }
+
+    let best = structuredTarget;
+    let targetSource = structuredTargetSource;
+    let targetResolution = structuredTarget
+      ? "Resolved from standard path structures"
+      : "No standard LinkInfo or StringData target was resolved";
+    let environmentTargetStatus = envTarget ? "Present" : "Not present";
+
+    if (envBlock && !hasExpString) {
+      res.warnings.push("EnvironmentVariableDataBlock is present but the HasExpString LinkFlag is not set.");
+    }
+    if (hasExpString && !envBlock) {
+      res.warnings.push("HasExpString is set but no EnvironmentVariableDataBlock was found.");
+    }
+    if (envTargetUnicode && envTargetAnsi && envTargetUnicode !== envTargetAnsi) {
+      res.warnings.push("EnvironmentVariableDataBlock ANSI and Unicode targets differ; Unicode was preferred.");
+    }
+
+    if (envTarget) {
+      const encodingLabel = envTargetUnicode
+        ? (envTargetAnsi && envTargetAnsi === envTargetUnicode ? "Unicode/ANSI agree" : "Unicode")
+        : "ANSI";
+
+      if (disableLinkPathTracking) {
+        environmentTargetStatus = "Present but ignored because DisableLinkPathTracking is set";
+        if (!best) targetResolution = environmentTargetStatus;
+      } else if (hasExpString) {
+        if (preferEnvironmentPath || !best) {
+          best = envTarget;
+          targetSource = `EnvironmentVariableDataBlock (${encodingLabel})`;
+          targetResolution = preferEnvironmentPath
+            ? "Resolved from EnvironmentVariableDataBlock; PreferEnvironmentPath is set"
+            : "Resolved from EnvironmentVariableDataBlock because no standard path target was available";
+          environmentTargetStatus = preferEnvironmentPath
+            ? "Selected as the preferred target"
+            : "Selected as the available target";
+        } else {
+          environmentTargetStatus = "Available as an alternative target; standard path structures take precedence";
+        }
+      } else {
+        environmentTargetStatus = "Present but unconfirmed because HasExpString is not set";
+        if (!best) {
+          best = envTarget;
+          targetSource = `EnvironmentVariableDataBlock (${encodingLabel}; flag mismatch)`;
+          targetResolution = "Unconfirmed target candidate from EnvironmentVariableDataBlock";
+        }
+      }
+    } else if (preferEnvironmentPath) {
+      res.warnings.push("PreferEnvironmentPath is set but no environment target string was found.");
+      if (!best) targetResolution = "PreferEnvironmentPath is set, but no environment target was available";
+    }
+
     const tracker = extraBlocks.find(b => b.type === "TrackerDataBlock")?.parsed || null;
     const props = extraBlocks.find(b => b.type === "PropertyStoreDataBlock")?.parsed || null;
     const knownFolder = extraBlocks.find(b => b.type === "KnownFolderDataBlock")?.parsed || null;
@@ -1843,14 +1932,17 @@
 
     res.dfir.derived = {
       bestTargetPath: best,
+      targetSource,
+      targetResolution,
+      environmentTargetStatus,
       showCommand: res.header.showCommandName,
       hotKey: res.header.hotKeyDecoded.display
     };
 
     if (arg && /powershell|cmd\.exe|wscript|cscript|mshta|rundll32|regsvr32/i.test(arg)) res.dfir.suspicious.push("Arguments reference a common LOLBin/command interpreter.");
     if (arg && /-enc|-encodedcommand|FromBase64String|IEX|Invoke-Expression/i.test(arg)) res.dfir.suspicious.push("Arguments contain patterns often associated with obfuscated PowerShell.");
-    const anyUNC = [localBase, best, rel, work, arg, iconLoc].some(looksUNC);
-    const anyDrive = [localBase, best, rel, work].some(looksDrivePath);
+    const anyUNC = [localBase, best, envTarget, rel, work, arg, iconLoc].some(looksUNC);
+    const anyDrive = [localBase, best, envTarget, rel, work].some(looksDrivePath);
     if (anyUNC && anyDrive) res.dfir.suspicious.push("Mix of UNC and local drive paths across fields.");
     if (envVar?.targetUnicode && looksUNC(envVar.targetUnicode)) res.dfir.suspicious.push("EnvironmentVariableDataBlock target appears to be a UNC path.");
 
@@ -2574,6 +2666,17 @@
       ? parsed.dfir.extracted.extra_macAddresses
       : [];
     const overviewTarget = parsed.dfir?.derived?.bestTargetPath || null;
+    const overviewTargetSource = parsed.dfir?.derived?.targetSource || null;
+    const overviewTargetResolution = parsed.dfir?.derived?.targetResolution || null;
+    const overviewEnvBlock = parsed.sections
+      .find(s => s.name === "ExtraData")?.detail?.blocks
+      ?.find(b => b.type === "EnvironmentVariableDataBlock") || null;
+    const overviewTargetIsEnvironment = typeof overviewTargetSource === "string" && overviewTargetSource.startsWith("EnvironmentVariableDataBlock");
+    const overviewTargetMeta = overviewTargetIsEnvironment
+      ? (overviewEnvBlock?.parsed?.targetUnicode
+          ? overviewEnvBlock?.meta?.targetUnicode
+          : overviewEnvBlock?.meta?.targetAnsi)
+      : null;
     const overviewMachineMeta = overviewTracker?.meta?.machineID || null;
     const overviewFirstMacSource = overviewTracker?.parsed?.macAddressDetails?.[0]?.sources?.[0] || null;
     const overviewFirstMacMetaKey = trackerSourceNodeMetaKey(overviewFirstMacSource);
@@ -2583,18 +2686,29 @@
 
     const targetValue = el("div", {class:"overview-value mono"});
     if (overviewTarget) {
-      targetValue.appendChild(clickableText(
-        overviewTarget,
-        "Search for this target in the file and open the hex view",
-        () => jumpToValueSearch(overviewTarget)
-      ));
+      if (overviewTargetMeta && Number.isFinite(overviewTargetMeta.absOff) && Number.isFinite(overviewTargetMeta.len)) {
+        targetValue.appendChild(clickableText(
+          overviewTarget,
+          "Jump to the EnvironmentVariableDataBlock target bytes",
+          () => jumpToRange(overviewTargetMeta.absOff, overviewTargetMeta.len, "Environment target")
+        ));
+      } else {
+        targetValue.appendChild(clickableText(
+          overviewTarget,
+          "Search for this target in the file and open the hex view",
+          () => jumpToValueSearch(overviewTarget)
+        ));
+      }
     } else {
-      targetValue.appendChild(document.createTextNode("Target not resolved"));
+      targetValue.appendChild(document.createTextNode(overviewTargetResolution || "Target not resolved"));
     }
+    const targetMetaText = overviewTarget
+      ? `${overviewTargetSource || "Derived target"} · Click to locate the value in the hex view`
+      : (overviewTargetResolution || "No target path was derived from the parsed structures");
     overview.appendChild(el("div", {class:"overview-card wide"}, [
       el("div", {class:"overview-label"}, ["Best target candidate"]),
       targetValue,
-      el("div", {class:"overview-meta"}, [overviewTarget ? "Click to locate the value in the hex view" : "No target path was derived from the parsed structures"])
+      el("div", {class:"overview-meta"}, [targetMetaText])
     ]));
 
     const identityValue = el("div", {class:"overview-value mono"});
@@ -2671,7 +2785,19 @@
     ]));
     $out.appendChild(sectionDetails("Header", "ShellLinkHeader (offset 0x00000000)", hdr));
 
+    const envBlockForDfir = parsed.sections
+      .find(s => s.name === "ExtraData")?.detail?.blocks
+      ?.find(b => b.type === "EnvironmentVariableDataBlock") || null;
+    const derivedTargetSource = parsed.dfir?.derived?.targetSource || "";
+    const derivedTargetIsEnvironment = derivedTargetSource.startsWith("EnvironmentVariableDataBlock");
+    const derivedTargetMeta = derivedTargetIsEnvironment
+      ? (envBlockForDfir?.parsed?.targetUnicode
+          ? envBlockForDfir?.meta?.targetUnicode
+          : envBlockForDfir?.meta?.targetAnsi)
+      : null;
+
     const dfirDerivedMeta = {
+      bestTargetPath: derivedTargetMeta || null,
       showCommand: { off: 0x3C, len: 4 },
       hotKey:      { off: 0x40, len: 2 }
     };
