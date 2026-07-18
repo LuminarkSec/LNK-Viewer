@@ -104,9 +104,31 @@
     #hexBox{
       max-height: 70vh;
       overflow: auto;
+      position: relative;
+      overflow-anchor: none;
     }
 
-    .hx-line { display:block; }
+    .hx-line {
+      display: block;
+      height: 18px;
+      line-height: 18px;
+    }
+    .hx-virtual-canvas {
+      position: relative;
+      display: block;
+      min-width: 82ch;
+      overflow-anchor: none;
+    }
+    .hx-virtual-rows {
+      position: absolute;
+      top: 0;
+      left: 0;
+      display: block;
+      width: max-content;
+      min-width: 82ch;
+      will-change: transform;
+      overflow-anchor: none;
+    }
     .hx-off { color: var(--hx-off); display:inline-block; width: 9ch; }
     .hx-gap { display:inline-block; width: 2ch; }
     .hx-hex { display:inline-block; width: 49ch; color: var(--hx-hex); }
@@ -132,6 +154,56 @@
     .toggle input { transform: scale(1.1); }
 
     .badge { display:inline-block; padding: 1px 6px; border-radius: 999px; border:1px solid var(--border); }
+
+    /* TrackerDataBlock machine identity presentation */
+    .tracker-card {
+      margin-top: 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .tracker-card-head {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      flex-wrap:wrap;
+      padding: 10px 12px;
+      background: rgba(54,195,138,.08);
+      border-bottom: 1px solid var(--border);
+    }
+    .tracker-card-title { font-weight: 700; }
+    .tracker-identity-grid {
+      display:grid;
+      grid-template-columns: 150px minmax(0, 1fr);
+      gap: 0;
+    }
+    .tracker-identity-grid > div {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .tracker-identity-grid > div:nth-last-child(-n+2) { border-bottom: 0; }
+    .tracker-label { opacity:.78; font-size:12px; font-weight:650; }
+    .tracker-machine { font-size:15px; font-weight:700; overflow-wrap:anywhere; }
+    .tracker-mac-list { display:flex; flex-direction:column; gap:8px; }
+    .tracker-mac-entry {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 10px;
+      background: rgba(255,255,255,.025);
+    }
+    .tracker-mac-line { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .tracker-mac-address { font-size:15px; font-weight:750; letter-spacing:.04em; color:var(--accent); }
+    .tracker-source { margin-top:4px; opacity:.78; font-size:12px; overflow-wrap:anywhere; }
+    .tracker-source-link { display:inline-block; margin:2px 4px 0 0; }
+    .tracker-provenance { margin: 10px 0 0; border-radius:10px; }
+    .tracker-provenance table { margin-top:8px; }
+    .tracker-guid { overflow-wrap:anywhere; }
+    @media (max-width: 650px) {
+      .tracker-identity-grid { grid-template-columns: 1fr; }
+      .tracker-identity-grid > div { border-bottom: 0; }
+      .tracker-label { padding-bottom: 0 !important; }
+    }
 
     /* Hover tooltip in hex view */
     .hx-tip{
@@ -247,6 +319,71 @@
     const s4 = b.slice(0,2).map(x=>x.toString(16).padStart(2,"0")).join("");
     const s5 = b.slice(2).map(x=>x.toString(16).padStart(2,"0")).join("");
     return `${d1.toString(16).padStart(8,"0")}-${d2.toString(16).padStart(4,"0")}-${d3.toString(16).padStart(4,"0")}-${s4}-${s5}`.toLowerCase();
+  }
+
+  // UUID version 1 GUIDs can contain a 48-bit node identifier. When the
+  // multicast bit is clear, that node is a MAC-address candidate. If the bit
+  // is set, RFC-compatible generators use a synthetic/random node instead.
+  function analyseUuidNode(guid, source) {
+    const m = String(guid || "").toLowerCase().match(
+      /^([0-9a-f]{8})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{12})$/
+    );
+    if (!m) return null;
+
+    const uuidVersion = parseInt(m[3][0], 16);
+    const clockSeqHigh = parseInt(m[4].slice(0, 2), 16);
+    const isRfc4122Variant = (clockSeqHigh & 0xC0) === 0x80;
+    const nodeHex = m[5];
+    const nodeFirstOctet = parseInt(nodeHex.slice(0, 2), 16);
+    const isMulticastNode = (nodeFirstOctet & 0x01) !== 0;
+    const isLocallyAdministered = (nodeFirstOctet & 0x02) !== 0;
+    const node = nodeHex.match(/../g).join(":").toUpperCase();
+    const isMacAddressCandidate = uuidVersion === 1 && isRfc4122Variant && !isMulticastNode;
+
+    return {
+      source,
+      guid,
+      uuidVersion,
+      isRfc4122Variant,
+      node,
+      isMulticastNode,
+      isLocallyAdministered,
+      isMacAddressCandidate
+    };
+  }
+
+  function extractTrackerMacInfo(droid, droidBirth) {
+    const guidEntries = [
+      ...droid.map((guid, index) => ({ guid, source: `DROID[${index}]` })),
+      ...droidBirth.map((guid, index) => ({ guid, source: `DROIDBirth[${index}]` }))
+    ];
+
+    const uuidV1Nodes = guidEntries
+      .map(({ guid, source }) => analyseUuidNode(guid, source))
+      .filter(info => info && info.uuidVersion === 1 && info.isRfc4122Variant);
+
+    const byAddress = new Map();
+    for (const info of uuidV1Nodes) {
+      if (!info.isMacAddressCandidate) continue;
+      let entry = byAddress.get(info.node);
+      if (!entry) {
+        entry = {
+          address: info.node,
+          administration: info.isLocallyAdministered ? "locally administered" : "globally administered",
+          sources: [],
+          guids: []
+        };
+        byAddress.set(info.node, entry);
+      }
+      if (!entry.sources.includes(info.source)) entry.sources.push(info.source);
+      if (!entry.guids.includes(info.guid)) entry.guids.push(info.guid);
+    }
+
+    return {
+      macAddresses: [...byAddress.keys()],
+      macAddressDetails: [...byAddress.values()],
+      uuidV1Nodes
+    };
   }
 
   function readFixedAnsi(u8, off, len) {
@@ -622,11 +759,10 @@
   }
 
   // ---------- Coloured hex renderer ----------
-  function renderHexColour(u8, absStart, len, opts) {
+  function appendHexRows(wrap, u8, absStart, len, opts = {}) {
     const group = opts.group ?? 16;
-    const maxBytes = opts.maxBytes ?? len;
     const start = Math.max(0, absStart);
-    const end = Math.min(u8.length, start + Math.min(len, maxBytes));
+    const end = Math.min(u8.length, start + Math.max(0, len));
 
     const needle = (opts.search || "");
     const highlightHits = opts.highlightHits ?? true;
@@ -634,15 +770,25 @@
     const hoverRange = opts.hoverRange || null;
     const anchorAbs = opts.anchorAbs ?? null;
 
-    const hitMap = highlightHits ? buildHitMap(u8, start, end, needle) : new Uint8Array(end-start);
+    const hitMapStart = Number.isFinite(opts.hitMapStart) ? opts.hitMapStart : start;
+    const hitMap = opts.hitMap || (
+      highlightHits
+        ? buildHitMap(u8, start, end, needle)
+        : new Uint8Array(Math.max(0, end - start))
+    );
 
-    const wrap = el("div", {class:"hex", id: opts.hexId || ""});
+    const isHitAt = (absPos) => {
+      if (!highlightHits) return false;
+      const rel = absPos - hitMapStart;
+      return rel >= 0 && rel < hitMap.length && hitMap[rel] === 1;
+    };
 
     for (let i = start; i < end; i += group) {
       const lineStart = i;
       const lineEnd = Math.min(end, i + group);
 
       const lineNode = el("span", {class:"hx-line"});
+      lineNode.dataset.rowAbs = String(lineStart);
       lineNode.appendChild(el("span", {class:"hx-off"}, [(lineStart).toString(16).toUpperCase().padStart(8,"0")]));
 
       const hexCol = el("span", {class:"hx-hex"});
@@ -655,9 +801,8 @@
 
         const absPos = lineStart + j;
         const b = u8[absPos];
-        const rel = absPos - start;
 
-        const isHit = highlightHits && hitMap[rel] === 1;
+        const isHit = isHitAt(absPos);
         const isSel = selectedRange && absPos >= selectedRange.startAbs && absPos < selectedRange.endAbs;
         const isHov = hoverRange && absPos >= hoverRange.startAbs && absPos < hoverRange.endAbs;
         const isAnchor = anchorAbs !== null && absPos === anchorAbs;
@@ -666,7 +811,7 @@
         if (b === 0x00) cls.push("null");
         const printable = (b >= 0x20 && b < 0x7F);
         if (printable) cls.push("print");
-        const pathish = printable && ("\\/:._-".includes(String.fromCharCode(b)) ||
+        const pathish = printable && ("\/:._-".includes(String.fromCharCode(b)) ||
           (b>=0x30 && b<=0x39) || (b>=0x41 && b<=0x5A) || (b>=0x61 && b<=0x7A));
         if (pathish) cls.push("path");
         if (isHit) cls.push("hit");
@@ -688,9 +833,8 @@
         if (lineStart + j >= lineEnd) break;
         const absPos = lineStart + j;
         const b = u8[absPos];
-        const rel = absPos - start;
 
-        const isHit = highlightHits && hitMap[rel] === 1;
+        const isHit = isHitAt(absPos);
         const isSel = selectedRange && absPos >= selectedRange.startAbs && absPos < selectedRange.endAbs;
         const isHov = hoverRange && absPos >= hoverRange.startAbs && absPos < hoverRange.endAbs;
 
@@ -712,6 +856,14 @@
     }
 
     return wrap;
+  }
+
+  function renderHexColour(u8, absStart, len, opts = {}) {
+    const maxBytes = opts.maxBytes ?? len;
+    const start = Math.max(0, absStart);
+    const end = Math.min(u8.length, start + Math.min(len, maxBytes));
+    const wrap = el("div", {class:"hex", id: opts.hexId || ""});
+    return appendHexRows(wrap, u8, start, end - start, opts);
   }
 
   // ---------- Parse ItemIDList (simple) ----------
@@ -817,46 +969,88 @@
         const birth1 = (droidBirthOff + 16 <= absEnd) ? readGuid(u8, droidBirthOff) : null;
         const birth2 = (droidBirthOff + 32 <= absEnd) ? readGuid(u8, droidBirthOff+16) : null;
 
+        const droid = [droid1, droid2].filter(Boolean);
+        const droidBirth = [birth1, birth2].filter(Boolean);
+        const trackerMacInfo = extractTrackerMacInfo(droid, droidBirth);
+
         out.parsed = {
           length: len,
           version: ver,
           machineID: machine || null,
-          droid: [droid1, droid2].filter(Boolean),
-          droidBirth: [birth1, birth2].filter(Boolean),
+          macAddresses: trackerMacInfo.macAddresses,
+          macAddressDetails: trackerMacInfo.macAddressDetails,
+          uuidV1Nodes: trackerMacInfo.uuidV1Nodes,
+          droid,
+          droidBirth,
         };
+
+        if (trackerMacInfo.uuidV1Nodes.some(x => x.isMulticastNode)) {
+          out.notes.push("One or more UUID v1 node identifiers have the multicast bit set, so they are shown as UUID nodes but not reported as physical MAC-address candidates.");
+        }
 
         meta.length = { absOff: lengthOff, len: 4 };
         meta.version = { absOff: versionOff, len: 4 };
         meta.machineID = { absOff: machineOff, len: Math.min(16, absEnd - machineOff) };
         meta.droid = { absOff: droidOff, len: Math.min(32, absEnd - droidOff) };
         meta.droidBirth = { absOff: droidBirthOff, len: Math.min(32, absEnd - droidBirthOff) };
+        if (droid1) {
+          meta.droid0 = { absOff: droidOff, len: 16 };
+          meta.droid0Node = { absOff: droidOff + 10, len: 6 };
+        }
+        if (droid2) {
+          meta.droid1 = { absOff: droidOff + 16, len: 16 };
+          meta.droid1Node = { absOff: droidOff + 26, len: 6 };
+        }
+        if (birth1) {
+          meta.droidBirth0 = { absOff: droidBirthOff, len: 16 };
+          meta.droidBirth0Node = { absOff: droidBirthOff + 10, len: 6 };
+        }
+        if (birth2) {
+          meta.droidBirth1 = { absOff: droidBirthOff + 16, len: 16 };
+          meta.droidBirth1Node = { absOff: droidBirthOff + 26, len: 6 };
+        }
       }
       else if (sig === EXTRA_SIG.ConsoleDataBlock) {
+        const expectedSize = 0xCC;
+        if (blockSize !== expectedSize) {
+          out.notes.push(`Invalid ConsoleDataBlock size: ${hex(blockSize)}; expected 0x000000CC.`);
+        }
+
         const fillOff = absStart + 8;
         const popupFillOff = absStart + 10;
         const sbxOff = absStart + 12;
         const sbyOff = absStart + 14;
         const wxOff = absStart + 16;
         const wyOff = absStart + 18;
-        const fontSizeOff = absStart + 28;
-        const fontFamilyOff = absStart + 32;
-        const fontWeightOff = absStart + 36;
-
-        // faceName is 32 WCHAR = 64 bytes, and in this variant we read from +44.
+        const windowOriginXOff = absStart + 20;
+        const windowOriginYOff = absStart + 22;
+        const fontSizeOff = absStart + 32;
+        const fontFamilyOff = absStart + 36;
+        const fontWeightOff = absStart + 40;
         const faceNameOff = absStart + 44;
+        const cursorOff = absStart + 108;
+        const fullScreenOff = absStart + 112;
+        const quickEditOff = absStart + 116;
+        const insertModeOff = absStart + 120;
+        const autoPositionOff = absStart + 124;
+        const historyBufferSizeOff = absStart + 128;
+        const numberOfHistoryBuffersOff = absStart + 132;
+        const historyNoDupOff = absStart + 136;
+        const colourTableOff = absStart + 140;
 
-        const cursorOff = absStart + 104;
-        const fullScreenOff = absStart + 108;
-        const quickEditOff = absStart + 124;
-        const insertModeOff = absStart + 128;
-
-        const safeU16 = (o) => (o+2<=absEnd) ? dv.getUint16(o, true) : null;
-        const safeI16 = (o) => (o+2<=absEnd) ? dv.getInt16(o, true) : null;
-        const safeU32 = (o) => (o+4<=absEnd) ? dv.getUint32(o, true) : null;
+        const safeU16 = (o) => (o + 2 <= absEnd) ? dv.getUint16(o, true) : null;
+        const safeI16 = (o) => (o + 2 <= absEnd) ? dv.getInt16(o, true) : null;
+        const safeU32 = (o) => (o + 4 <= absEnd) ? dv.getUint32(o, true) : null;
+        const safeMetaLen = (o, wanted) => Math.max(0, Math.min(wanted, absEnd - o));
 
         const faceName = (faceNameOff + 2 <= absEnd)
           ? readFixedUtf16leZ(u8, faceNameOff, 64, absEnd)
           : null;
+
+        const colourTable = [];
+        for (let i = 0; i < 16; i++) {
+          colourTable.push(safeU32(colourTableOff + (i * 4)));
+        }
 
         out.parsed = {
           fillAttributes: safeU16(fillOff),
@@ -865,7 +1059,11 @@
           screenBufferSizeY: safeI16(sbyOff),
           windowSizeX: safeI16(wxOff),
           windowSizeY: safeI16(wyOff),
+          windowOriginX: safeI16(windowOriginXOff),
+          windowOriginY: safeI16(windowOriginYOff),
           fontSize: safeU32(fontSizeOff),
+          fontWidth: safeU16(fontSizeOff),
+          fontHeight: safeU16(fontSizeOff + 2),
           fontFamily: safeU32(fontFamilyOff),
           fontWeight: safeU32(fontWeightOff),
           faceName: faceName || null,
@@ -873,18 +1071,36 @@
           fullScreen: safeU32(fullScreenOff),
           quickEdit: safeU32(quickEditOff),
           insertMode: safeU32(insertModeOff),
+          autoPosition: safeU32(autoPositionOff),
+          historyBufferSize: safeU32(historyBufferSizeOff),
+          numberOfHistoryBuffers: safeU32(numberOfHistoryBuffersOff),
+          historyNoDup: safeU32(historyNoDupOff),
+          colourTable,
         };
 
-        meta.fillAttributes = { absOff: fillOff, len: 2 };
-        meta.popupFillAttributes = { absOff: popupFillOff, len: 2 };
-        meta.screenBufferSizeX = { absOff: sbxOff, len: 2 };
-        meta.screenBufferSizeY = { absOff: sbyOff, len: 2 };
-        meta.windowSizeX = { absOff: wxOff, len: 2 };
-        meta.windowSizeY = { absOff: wyOff, len: 2 };
-        meta.fontSize = { absOff: fontSizeOff, len: 4 };
-        meta.fontFamily = { absOff: fontFamilyOff, len: 4 };
-        meta.fontWeight = { absOff: fontWeightOff, len: 4 };
-        meta.faceName = { absOff: faceNameOff, len: Math.min(64, absEnd - faceNameOff) };
+        meta.fillAttributes = { absOff: fillOff, len: safeMetaLen(fillOff, 2) };
+        meta.popupFillAttributes = { absOff: popupFillOff, len: safeMetaLen(popupFillOff, 2) };
+        meta.screenBufferSizeX = { absOff: sbxOff, len: safeMetaLen(sbxOff, 2) };
+        meta.screenBufferSizeY = { absOff: sbyOff, len: safeMetaLen(sbyOff, 2) };
+        meta.windowSizeX = { absOff: wxOff, len: safeMetaLen(wxOff, 2) };
+        meta.windowSizeY = { absOff: wyOff, len: safeMetaLen(wyOff, 2) };
+        meta.windowOriginX = { absOff: windowOriginXOff, len: safeMetaLen(windowOriginXOff, 2) };
+        meta.windowOriginY = { absOff: windowOriginYOff, len: safeMetaLen(windowOriginYOff, 2) };
+        meta.fontSize = { absOff: fontSizeOff, len: safeMetaLen(fontSizeOff, 4) };
+        meta.fontWidth = { absOff: fontSizeOff, len: safeMetaLen(fontSizeOff, 2) };
+        meta.fontHeight = { absOff: fontSizeOff + 2, len: safeMetaLen(fontSizeOff + 2, 2) };
+        meta.fontFamily = { absOff: fontFamilyOff, len: safeMetaLen(fontFamilyOff, 4) };
+        meta.fontWeight = { absOff: fontWeightOff, len: safeMetaLen(fontWeightOff, 4) };
+        meta.faceName = { absOff: faceNameOff, len: safeMetaLen(faceNameOff, 64) };
+        meta.cursorSize = { absOff: cursorOff, len: safeMetaLen(cursorOff, 4) };
+        meta.fullScreen = { absOff: fullScreenOff, len: safeMetaLen(fullScreenOff, 4) };
+        meta.quickEdit = { absOff: quickEditOff, len: safeMetaLen(quickEditOff, 4) };
+        meta.insertMode = { absOff: insertModeOff, len: safeMetaLen(insertModeOff, 4) };
+        meta.autoPosition = { absOff: autoPositionOff, len: safeMetaLen(autoPositionOff, 4) };
+        meta.historyBufferSize = { absOff: historyBufferSizeOff, len: safeMetaLen(historyBufferSizeOff, 4) };
+        meta.numberOfHistoryBuffers = { absOff: numberOfHistoryBuffersOff, len: safeMetaLen(numberOfHistoryBuffersOff, 4) };
+        meta.historyNoDup = { absOff: historyNoDupOff, len: safeMetaLen(historyNoDupOff, 4) };
+        meta.colourTable = { absOff: colourTableOff, len: safeMetaLen(colourTableOff, 64) };
       }
       else if (sig === EXTRA_SIG.PropertyStoreDataBlock) {
         const payloadStart = absStart + 8;
@@ -1342,6 +1558,7 @@
       extra_envTargetUnicode: envVar?.targetUnicode ?? null,
       extra_envTargetAnsi: envVar?.targetAnsi ?? null,
       extra_machineID: tracker?.machineID ?? null,
+      extra_macAddresses: tracker?.macAddresses ?? [],
       extra_propertyHints: props?.stringsHintUtf16le?.slice?.(0,5) ?? null
     };
 
@@ -1396,6 +1613,7 @@
   }
 
   let hexUI = null;
+  let hexJumpSequence = 0;
 
   function sectionDetails(title, subtitle, bodyNode, id=null) {
     const d = el("details", {open:false});
@@ -1420,29 +1638,51 @@
     return span;
   }
 
-  function jumpToRange(absOffset, byteLen, label = "") {
-    if (!hexUI || !lastParsed?._bytes) return;
+  function nextLayoutFrame() {
+    return new Promise(resolve => requestAnimationFrame(() => resolve()));
+  }
 
-    const startAbs = Math.max(0, absOffset|0);
-    const endAbs = Math.min(lastParsed._bytes.length, startAbs + Math.max(1, byteLen|0));
+  async function settleLayout(frameCount = 2) {
+    for (let i = 0; i < frameCount; i++) await nextLayoutFrame();
+  }
+
+  async function jumpToRange(absOffset, byteLen, label = "") {
+    if (!hexUI || !lastParsed?._bytes?.length) return;
+    const jumpId = ++hexJumpSequence;
+
+    const fileLen = lastParsed._bytes.length;
+    const rawStart = Number(absOffset);
+    const rawLen = Number(byteLen);
+    if (!Number.isFinite(rawStart)) return;
+
+    const startAbs = Math.max(0, Math.min(fileLen - 1, Math.trunc(rawStart)));
+    const length = Number.isFinite(rawLen) ? Math.max(1, Math.trunc(rawLen)) : 1;
+    const endAbs = Math.min(fileLen, startAbs + length);
 
     hexUI.setSelectedRange({ startAbs, endAbs, label });
+    hexUI.setHoverRange(null);
     hexUI.setAnchorAbs(startAbs);
     hexUI.searchInput.value = "";
+
     const pad = 256;
     const focus = Math.max(0, startAbs - pad);
 
     hexUI.details.open = true;
-    hexUI.setView("focus", focus);
-    hexUI.refresh();
-    hexUI.details.scrollIntoView({ behavior: "smooth", block: "start" });
+    // One refresh only. Starting at scrollTop 0 avoids carrying a stale scroll
+    // position from Head/Tail or an earlier focus window into the new view.
+    hexUI.setView("focus", focus, false);
+    hexUI.details.scrollIntoView({ behavior: "auto", block: "start" });
 
-    const line = Math.floor((startAbs - focus) / 16);
-    hexUI.hexBox.scrollTop = Math.max(0, line * 18 - 90);
+    // Let <details>, the toolbar and the virtual viewport finish layout before
+    // calculating the inner scroll position.
+    await settleLayout(2);
+    if (jumpId !== hexJumpSequence) return;
+    await hexUI.scrollToOffset(startAbs, () => jumpId === hexJumpSequence);
   }
 
-  function jumpToValueSearch(value) {
-    if (!hexUI || !lastParsed?._bytes) return;
+  async function jumpToValueSearch(value) {
+    if (!hexUI || !lastParsed?._bytes?.length) return;
+    const jumpId = ++hexJumpSequence;
 
     let needle = String(value ?? "");
     if (needle.length > 300) needle = needle.slice(0, 300);
@@ -1457,16 +1697,14 @@
 
     if (hit.pos >= 0) {
       const focus = Math.max(0, hit.pos - 256);
-      hexUI.setView("focus", focus);
-      hexUI.refresh();
-      hexUI.details.scrollIntoView({ behavior: "smooth", block: "start" });
-
-      const line = Math.floor((hit.pos - focus) / 16);
-      hexUI.hexBox.scrollTop = Math.max(0, line * 18 - 90);
+      hexUI.setView("focus", focus, false);
+      hexUI.details.scrollIntoView({ behavior: "auto", block: "start" });
+      await settleLayout(2);
+      if (jumpId !== hexJumpSequence) return;
+      await hexUI.scrollToOffset(hit.pos, () => jumpId === hexJumpSequence);
     } else {
-      hexUI.setView("head", 0);
-      hexUI.refresh();
-      hexUI.details.scrollIntoView({ behavior: "smooth", block: "start" });
+      hexUI.setView("head", 0, false);
+      hexUI.details.scrollIntoView({ behavior: "auto", block: "start" });
     }
   }
 
@@ -1652,6 +1890,216 @@
     return t;
   }
 
+  function trackerSourceMetaKey(source) {
+    const m = String(source || "").match(/^(DROID|DROIDBirth)\[(0|1)\]$/);
+    if (!m) return null;
+    if (m[1] === "DROID") return `droid${m[2]}`;
+    return `droidBirth${m[2]}`;
+  }
+
+  function trackerSourceNodeMetaKey(source) {
+    const base = trackerSourceMetaKey(source);
+    return base ? `${base}Node` : null;
+  }
+
+  function renderTrackerDataBlock(block) {
+    const parsed = block?.parsed || {};
+    const meta = block?.meta || {};
+    const wrap = el("div");
+
+    wrap.appendChild(renderKV({
+      signature: block.signature,
+      blockSize: block.size,
+      start: hex(block.start),
+      end: hex(block.end),
+      length: parsed.length,
+      version: parsed.version
+    }, {
+      meta: {
+        signature: meta._block,
+        blockSize: meta._block,
+        start: meta._block,
+        end: meta._block,
+        length: meta.length,
+        version: meta.version
+      }
+    }));
+
+    const card = el("div", {class:"tracker-card"});
+    const macDetails = Array.isArray(parsed.macAddressDetails) ? parsed.macAddressDetails : [];
+    const candidateCount = macDetails.length;
+
+    card.appendChild(el("div", {class:"tracker-card-head"}, [
+      el("div", {class:"tracker-card-title"}, ["Machine identity"]),
+      el("span", {class:"badge small"}, [
+        candidateCount
+          ? `${candidateCount} MAC candidate${candidateCount === 1 ? "" : "s"}`
+          : "No physical MAC candidate"
+      ])
+    ]));
+
+    const grid = el("div", {class:"tracker-identity-grid"});
+    grid.appendChild(el("div", {class:"tracker-label"}, ["Machine ID"]));
+    const machineCell = el("div", {class:"tracker-machine mono"});
+    const machineText = parsed.machineID || "Not present";
+    if (parsed.machineID && meta.machineID) {
+      machineCell.appendChild(clickableText(
+        machineText,
+        `Jump to MachineID @ ${hex(meta.machineID.absOff)}`,
+        () => jumpToRange(meta.machineID.absOff, meta.machineID.len, "TrackerDataBlock MachineID")
+      ));
+    } else {
+      machineCell.appendChild(document.createTextNode(machineText));
+    }
+    grid.appendChild(machineCell);
+
+    grid.appendChild(el("div", {class:"tracker-label"}, ["MAC address"]));
+    const macCell = el("div");
+    if (!macDetails.length) {
+      macCell.appendChild(el("span", {class:"muted"}, ["No UUID-v1 physical MAC-address candidate found."]));
+    } else {
+      const list = el("div", {class:"tracker-mac-list"});
+      for (const item of macDetails) {
+        const entry = el("div", {class:"tracker-mac-entry"});
+        const top = el("div", {class:"tracker-mac-line"});
+        const sources = Array.isArray(item.sources) ? item.sources : [];
+        const firstSourceMeta = sources
+          .map(source => trackerSourceNodeMetaKey(source))
+          .map(key => key ? meta[key] : null)
+          .find(Boolean);
+
+        if (item.address && firstSourceMeta) {
+          top.appendChild(clickableText(
+            item.address,
+            `Jump to MAC/node bytes @ ${hex(firstSourceMeta.absOff)}`,
+            () => jumpToRange(firstSourceMeta.absOff, firstSourceMeta.len, `MAC address ${item.address}`)
+          ));
+          top.lastChild.classList.add("tracker-mac-address", "mono");
+        } else {
+          top.appendChild(el("span", {class:"tracker-mac-address mono"}, [item.address || "Unknown"]));
+        }
+        if (item.administration) {
+          top.appendChild(el("span", {class:"badge small"}, [item.administration]));
+        }
+        entry.appendChild(top);
+
+        if (sources.length) {
+          const sourceLine = el("div", {class:"tracker-source"}, ["Found in "]);
+          sources.forEach((source, index) => {
+            if (index) sourceLine.appendChild(document.createTextNode(" and "));
+            const sourceKey = trackerSourceNodeMetaKey(source);
+            const sourceMeta = sourceKey ? meta[sourceKey] : null;
+            if (sourceMeta) {
+              const sourceLink = clickableText(
+                source,
+                `Jump to ${source} MAC/node bytes @ ${hex(sourceMeta.absOff)}`,
+                () => jumpToRange(sourceMeta.absOff, sourceMeta.len, `${source} MAC/node`)
+              );
+              sourceLink.classList.add("tracker-source-link", "mono");
+              sourceLine.appendChild(sourceLink);
+            } else {
+              sourceLine.appendChild(el("span", {class:"mono"}, [source]));
+            }
+          });
+          entry.appendChild(sourceLine);
+        }
+        list.appendChild(entry);
+      }
+      macCell.appendChild(list);
+    }
+    grid.appendChild(macCell);
+    card.appendChild(grid);
+    wrap.appendChild(card);
+
+    const droid = Array.isArray(parsed.droid) ? parsed.droid : [];
+    const droidBirth = Array.isArray(parsed.droidBirth) ? parsed.droidBirth : [];
+    const nodeInfo = Array.isArray(parsed.uuidV1Nodes) ? parsed.uuidV1Nodes : [];
+
+    const provenance = el("details", {class:"tracker-provenance"});
+    provenance.appendChild(el("summary", {}, ["UUID and DROID provenance"]));
+
+    const table = el("table", {class:"small"});
+    table.appendChild(el("thead", {}, [el("tr", {}, [
+      el("th", {}, ["Source"]),
+      el("th", {}, ["GUID"]),
+      el("th", {}, ["UUID node interpretation"])
+    ])]));
+    const tbody = el("tbody");
+
+    const rows = [
+      ...droid.map((guid, index) => ({ source:`DROID[${index}]`, guid })),
+      ...droidBirth.map((guid, index) => ({ source:`DROIDBirth[${index}]`, guid }))
+    ];
+
+    for (const row of rows) {
+      const sourceKey = trackerSourceMetaKey(row.source);
+      const sourceMeta = sourceKey ? meta[sourceKey] : null;
+      const sourceCell = el("td", {class:"mono"});
+      if (sourceMeta) {
+        sourceCell.appendChild(clickableText(
+          row.source,
+          `Jump to ${row.source} @ ${hex(sourceMeta.absOff)}`,
+          () => jumpToRange(sourceMeta.absOff, sourceMeta.len, row.source)
+        ));
+      } else {
+        sourceCell.appendChild(document.createTextNode(row.source));
+      }
+      const guidCell = el("td", {class:"mono tracker-guid"});
+      if (sourceMeta) {
+        guidCell.appendChild(clickableText(
+          row.guid,
+          `Jump to ${row.source} @ ${hex(sourceMeta.absOff)}`,
+          () => jumpToRange(sourceMeta.absOff, sourceMeta.len, row.source)
+        ));
+      } else {
+        guidCell.appendChild(document.createTextNode(row.guid));
+      }
+
+      const info = nodeInfo.find(x => x.source === row.source && x.guid === row.guid);
+      let interpretation = "—";
+      if (info) {
+        if (info.isMacAddressCandidate) {
+          interpretation = `${info.node} — ${info.isLocallyAdministered ? "locally" : "globally"} administered MAC candidate`;
+        } else if (info.isMulticastNode) {
+          interpretation = `${info.node} — synthetic/random UUID node`;
+        } else {
+          interpretation = `${info.node} — UUID-v1 node`;
+        }
+      }
+
+      const interpretationCell = el("td", {class:"mono"});
+      const nodeMetaKey = trackerSourceNodeMetaKey(row.source);
+      const nodeMeta = nodeMetaKey ? meta[nodeMetaKey] : null;
+      if (info && nodeMeta) {
+        interpretationCell.appendChild(clickableText(
+          interpretation,
+          `Jump to UUID node bytes @ ${hex(nodeMeta.absOff)}`,
+          () => jumpToRange(nodeMeta.absOff, nodeMeta.len, `${row.source} UUID node`)
+        ));
+      } else {
+        interpretationCell.appendChild(document.createTextNode(interpretation));
+      }
+
+      tbody.appendChild(el("tr", {}, [
+        sourceCell,
+        guidCell,
+        interpretationCell
+      ]));
+    }
+
+    if (!rows.length) {
+      tbody.appendChild(el("tr", {}, [
+        el("td", {colspan:"3", class:"muted"}, ["No DROID identifiers parsed."])
+      ]));
+    }
+
+    table.appendChild(tbody);
+    provenance.appendChild(table);
+    wrap.appendChild(provenance);
+
+    return wrap;
+  }
+
   function renderExtraDataTable(blocks) {
     if (!blocks?.length) return el("div", {class:"muted small"}, ["No ExtraData blocks parsed."]);
     const t = el("table", {class:"small"});
@@ -1672,7 +2120,10 @@
       if (b.type === "EnvironmentVariableDataBlock") {
         interesting = (b.parsed?.targetUnicode || b.parsed?.targetAnsi || "").slice(0,120);
       } else if (b.type === "TrackerDataBlock") {
-        interesting = `MachineID=${b.parsed?.machineID || ""}`.trim();
+        const machinePart = `MachineID=${b.parsed?.machineID || ""}`;
+        const macs = Array.isArray(b.parsed?.macAddresses) ? b.parsed.macAddresses : [];
+        const macPart = macs.length ? ` | MAC=${macs.join(", ")}` : "";
+        interesting = `${machinePart}${macPart}`.trim();
       } else if (b.type === "KnownFolderDataBlock") {
         interesting = (b.parsed?.knownFolderName || b.parsed?.knownFolderID || "").slice(0,120);
       } else if (b.type === "PropertyStoreDataBlock") {
@@ -1730,16 +2181,20 @@
         meta2.end = meta2._block;
       }
 
-      const data = {
-        type: b.type,
-        signature: b.signature,
-        blockSize: b.size,
-        start: hex(b.start),
-        end: hex(b.end),
-        ...(b.parsed ? b.parsed : {})
-      };
+      if (b.type === "TrackerDataBlock") {
+        content.appendChild(renderTrackerDataBlock(b));
+      } else {
+        const data = {
+          type: b.type,
+          signature: b.signature,
+          blockSize: b.size,
+          start: hex(b.start),
+          end: hex(b.end),
+          ...(b.parsed ? b.parsed : {})
+        };
 
-      content.appendChild(renderKV(data, { meta: meta2, enableStringSearch: true }));
+        content.appendChild(renderKV(data, { meta: meta2, enableStringSearch: true }));
+      }
 
       if (b.notes?.length) content.appendChild(el("div",{class:"warn"},[
         el("div",{html:"<strong>Notes</strong>"}),
@@ -1860,11 +2315,23 @@
       hotKey:      { off: 0x40, len: 2 }
     };
 
+    const trackerBlockForDfir = parsed.sections
+      .find(s => s.name === "ExtraData")?.detail?.blocks
+      ?.find(b => b.type === "TrackerDataBlock") || null;
+    const trackerMetaForDfir = trackerBlockForDfir?.meta || {};
+    const firstMacSourceForDfir = trackerBlockForDfir?.parsed?.macAddressDetails?.[0]?.sources?.[0] || null;
+    const firstMacMetaKeyForDfir = trackerSourceNodeMetaKey(firstMacSourceForDfir);
+    const firstMacNodeMetaForDfir = firstMacMetaKeyForDfir ? trackerMetaForDfir[firstMacMetaKeyForDfir] : null;
+    const dfirExtractedMeta = {
+      extra_machineID: trackerMetaForDfir.machineID || null,
+      extra_macAddresses: firstMacNodeMetaForDfir || null
+    };
+
     const df = el("div");
     df.appendChild(el("h2", {style:"margin:14px 0 8px;font-size:16px"}, ["DFIR quick view"]));
     const left = el("div", {}, [
-      el("div", {class:"small muted"}, ["Extracted strings (click searches ASCII + UTF-16LE)"]),
-      renderKV(parsed.dfir.extracted, { enableStringSearch: true })
+      el("div", {class:"small muted"}, ["Extracted strings and identifiers (click to locate bytes where available)"]),
+      renderKV(parsed.dfir.extracted, { enableStringSearch: true, meta: dfirExtractedMeta })
     ]);
     const right = el("div", {}, [
       el("div", {class:"small muted"}, ["Derived fields (offset-backed where possible)"]),
@@ -1973,6 +2440,13 @@
     let dragOn = false;
     let dragAnchor = null;
 
+    const HEX_GROUP = 16;
+    const HEX_ROW_HEIGHT = 18;
+    const HEX_OVERSCAN_ROWS = 12;
+    let virtualState = null;
+    let virtualScrollRaf = 0;
+    let selectionInfoEl = null;
+
     function setSelectedFromTwo(a, b, label="Selection") {
       const lo = Math.min(a,b), hi = Math.max(a,b);
       selectedRange = { startAbs: lo, endAbs: hi+1, label };
@@ -1989,16 +2463,24 @@
 
     let rafPending = false;
     let rafLast = 0;
-    function scheduleRefresh(preserveScroll=true) {
-      if (menuOpen) return; // dont rerender while context menu is open
+    function updateSelectionInfo() {
+      if (!selectionInfoEl?.isConnected) return;
+      const next = selectionInfoNode();
+      selectionInfoEl.replaceWith(next);
+      selectionInfoEl = next;
+    }
+
+    function scheduleRefresh(_preserveScroll=true) {
+      if (menuOpen) return; // do not repaint while the context menu is open
       const now = performance.now();
       if (rafPending) return;
-      if (now - rafLast < 33) return;
+      if (now - rafLast < 16) return;
       rafPending = true;
       requestAnimationFrame(() => {
         rafPending = false;
         rafLast = performance.now();
-        refreshHex(preserveScroll);
+        updateSelectionInfo();
+        renderVirtualRows(true);
       });
     }
 
@@ -2021,81 +2503,184 @@
 
     function hideTip() { tip.style.display = "none"; }
 
+    function currentViewRange() {
+      if (view === "head") {
+        const len = Math.min(bytesToShow, parsed._bytes.length);
+        return { start: 0, len, label: `File head (first ${len} bytes):` };
+      }
+
+      if (view === "tail") {
+        const start = Math.max(0, parsed._bytes.length - bytesToShow);
+        const len = Math.min(bytesToShow, parsed._bytes.length - start);
+        return { start, len, label: `File tail (last ${len} bytes):` };
+      }
+
+      const start = Math.max(0, Math.min(focusStart, Math.max(0, parsed._bytes.length - 1)));
+      const len = Math.min(bytesToShow, Math.max(0, parsed._bytes.length - start));
+      return { start, len, label: `Focus view @ ${hex(start)} (showing ${len} bytes):` };
+    }
+
+    function scrollContentTop(node, scroller) {
+      const nodeRect = node.getBoundingClientRect();
+      const scrollerRect = scroller.getBoundingClientRect();
+      return (nodeRect.top - scrollerRect.top) + scroller.scrollTop;
+    }
+
+    function renderVirtualRows(force=false, ensureRow=null) {
+      const state = virtualState;
+      if (!state?.hexNode?.isConnected || !state.canvas?.isConnected) return;
+
+      const canvasTop = scrollContentTop(state.canvas, hexBox);
+      const visibleTop = Math.max(0, hexBox.scrollTop - canvasTop);
+      const viewportHeight = Math.max(HEX_ROW_HEIGHT, hexBox.clientHeight || 500);
+      let firstVisibleRow = Math.floor(visibleTop / HEX_ROW_HEIGHT);
+      const visibleRows = Math.ceil(viewportHeight / HEX_ROW_HEIGHT);
+      const lastPossibleRow = Math.max(0, state.totalRows - 1);
+
+      firstVisibleRow = Math.max(0, Math.min(lastPossibleRow, firstVisibleRow));
+      if (Number.isFinite(ensureRow)) {
+        firstVisibleRow = Math.max(0, Math.min(lastPossibleRow, Math.trunc(ensureRow)));
+      }
+
+      const firstRow = Math.max(0, firstVisibleRow - HEX_OVERSCAN_ROWS);
+      const lastRow = Math.min(state.totalRows, firstVisibleRow + visibleRows + HEX_OVERSCAN_ROWS);
+
+      if (!force && firstRow === state.firstRow && lastRow === state.lastRow) return;
+      state.firstRow = firstRow;
+      state.lastRow = lastRow;
+
+      state.rowsHost.style.transform = `translateY(${firstRow * HEX_ROW_HEIGHT}px)`;
+      state.rowsHost.innerHTML = "";
+
+      const rowStartAbs = state.start + firstRow * HEX_GROUP;
+      const rowEndAbs = Math.min(state.end, state.start + lastRow * HEX_GROUP);
+      appendHexRows(state.rowsHost, parsed._bytes, rowStartAbs, rowEndAbs - rowStartAbs, {
+        group: HEX_GROUP,
+        search: state.needle,
+        highlightHits: state.highlight,
+        selectedRange,
+        hoverRange,
+        anchorAbs,
+        hitMap: state.hitMap,
+        hitMapStart: state.start
+      });
+    }
+
+    function scheduleVirtualRows(force=false) {
+      if (virtualScrollRaf) return;
+      virtualScrollRaf = requestAnimationFrame(() => {
+        virtualScrollRaf = 0;
+        renderVirtualRows(force);
+      });
+    }
+
     function refreshHex(scrollPreserve=true) {
       const prevScroll = hexBox.scrollTop;
       hexBox.innerHTML = "";
+      virtualState = null;
 
       const needle = search.value || "";
       const highlight = document.getElementById("hexHit").checked;
+      const range = currentViewRange();
 
-      hexBox.appendChild(selectionInfoNode());
+      focusBtn.disabled = view !== "focus";
+      selectionInfoEl = selectionInfoNode();
+      hexBox.appendChild(selectionInfoEl);
+      hexBox.appendChild(el("div", {class:"small muted"}, [range.label]));
 
-      let hexNode = null;
-
-      if (view === "head") {
-        focusBtn.disabled = true;
-        const len = Math.min(bytesToShow, parsed._bytes.length);
-        hexBox.appendChild(el("div", {class:"small muted"}, [`File head (first ${len} bytes):`]));
-        hexNode = renderHexColour(parsed._bytes, 0, len, {
-          maxBytes: bytesToShow,
-          search: needle,
-          highlightHits: highlight,
-          selectedRange,
-          hoverRange,
-          anchorAbs,
-          hexId: "hexRendered"
-        });
-      } else if (view === "tail") {
-        focusBtn.disabled = true;
-        const start = Math.max(0, parsed._bytes.length - bytesToShow);
-        const len = Math.min(bytesToShow, parsed._bytes.length);
-        hexBox.appendChild(el("div", {class:"small muted"}, [`File tail (last ${len} bytes):`]));
-        hexNode = renderHexColour(parsed._bytes, start, len, {
-          maxBytes: bytesToShow,
-          search: needle,
-          highlightHits: highlight,
-          selectedRange,
-          hoverRange,
-          anchorAbs,
-          hexId: "hexRendered"
-        });
-      } else {
-        focusBtn.disabled = false;
-        const start = Math.max(0, Math.min(focusStart, Math.max(0, parsed._bytes.length - 1)));
-        const len = Math.min(bytesToShow, parsed._bytes.length - start);
-        hexBox.appendChild(el("div", {class:"small muted"}, [`Focus view @ ${hex(start)} (showing ${len} bytes):`]));
-        hexNode = renderHexColour(parsed._bytes, start, len, {
-          maxBytes: bytesToShow,
-          search: needle,
-          highlightHits: highlight,
-          selectedRange,
-          hoverRange,
-          anchorAbs,
-          hexId: "hexRendered"
-        });
-      }
-
+      const hexNode = el("div", {class:"hex", id:"hexRendered"});
+      const canvas = el("div", {class:"hx-virtual-canvas"});
+      const rowsHost = el("div", {class:"hx-virtual-rows"});
+      canvas.appendChild(rowsHost);
+      hexNode.appendChild(canvas);
       hexBox.appendChild(hexNode);
       attachHexSelectionAndHoverHandlers(hexNode);
 
+      const end = Math.min(parsed._bytes.length, range.start + range.len);
+      const totalRows = Math.ceil(Math.max(0, end - range.start) / HEX_GROUP);
+      canvas.style.height = `${totalRows * HEX_ROW_HEIGHT}px`;
+      virtualState = {
+        start: range.start,
+        end,
+        totalRows,
+        firstRow: -1,
+        lastRow: -1,
+        needle,
+        highlight,
+        hitMap: highlight ? buildHitMap(parsed._bytes, range.start, end, needle) : new Uint8Array(Math.max(0, end - range.start)),
+        hexNode,
+        canvas,
+        rowsHost
+      };
+
       if (scrollPreserve) hexBox.scrollTop = prevScroll;
+      else hexBox.scrollTop = 0;
+      renderVirtualRows(true);
     }
 
-    function setView(mode, start=0) {
+    async function scrollToOffset(absOffset, isCurrent = null) {
+      const state = virtualState;
+      if (!state || state.end <= state.start) return false;
+      const stillCurrent = () => typeof isCurrent !== "function" || isCurrent();
+      if (!stillCurrent()) return false;
+
+      const numericOffset = Number(absOffset);
+      if (!Number.isFinite(numericOffset)) return false;
+
+      const clamped = Math.max(state.start, Math.min(state.end - 1, Math.trunc(numericOffset)));
+      const row = Math.floor((clamped - state.start) / HEX_GROUP);
+      const viewportHeight = Math.max(HEX_ROW_HEIGHT, hexBox.clientHeight || 500);
+      const centrePad = Math.max(40, (viewportHeight - HEX_ROW_HEIGHT) / 2);
+
+      // Recalculate after each frame because opening <details>, moving the page and
+      // replacing virtual rows can all alter the content origin.
+      for (let attempt = 0; attempt < 4; attempt++) {
+        if (!stillCurrent() || virtualState !== state || !state.hexNode.isConnected) return false;
+
+        const canvasTop = scrollContentTop(state.canvas, hexBox);
+        const target = canvasTop + row * HEX_ROW_HEIGHT - centrePad;
+        hexBox.scrollTop = Math.max(0, target);
+        renderVirtualRows(true, row);
+        await nextLayoutFrame();
+        if (!stillCurrent()) return false;
+
+        const byteNode = state.rowsHost.querySelector(`.hx-b[data-abs="${clamped}"]`);
+        if (!byteNode) continue;
+
+        const boxRect = hexBox.getBoundingClientRect();
+        const byteRect = byteNode.getBoundingClientRect();
+        const desiredY = boxRect.top + (boxRect.height / 2);
+        const delta = byteRect.top - desiredY;
+
+        if (Math.abs(delta) > HEX_ROW_HEIGHT) {
+          hexBox.scrollTop = Math.max(0, hexBox.scrollTop + delta);
+          renderVirtualRows(true, row);
+          await nextLayoutFrame();
+          if (!stillCurrent()) return false;
+        }
+
+        return Boolean(state.rowsHost.querySelector(`.hx-b[data-abs="${clamped}"]`));
+      }
+
+      return false;
+    }
+
+    function setView(mode, start=0, preserveScroll=true) {
       view = mode;
       if (mode === "focus") focusStart = start;
-      refreshHex();
+      refreshHex(preserveScroll);
     }
 
-    headBtn.addEventListener("click", () => setView("head", 0));
-    tailBtn.addEventListener("click", () => setView("tail", 0));
-    focusBtn.addEventListener("click", () => setView("focus", focusStart));
+    headBtn.addEventListener("click", () => { hexJumpSequence++; setView("head", 0); });
+    tailBtn.addEventListener("click", () => { hexJumpSequence++; setView("tail", 0); });
+    focusBtn.addEventListener("click", () => { hexJumpSequence++; setView("focus", focusStart); });
     plusBtn.addEventListener("click", () => { bytesToShow = Math.min(65536, bytesToShow * 2); refreshHex(); });
     minusBtn.addEventListener("click", () => { bytesToShow = Math.max(2048, Math.floor(bytesToShow / 2)); refreshHex(); });
 
-    search.addEventListener("input", () => { selectedRange = null; anchorAbs = null; hoverRange = null; closeMenu(); refreshHex(); });
+    search.addEventListener("input", () => { hexJumpSequence++; selectedRange = null; anchorAbs = null; hoverRange = null; closeMenu(); refreshHex(); });
     document.getElementById("hexHit").addEventListener("change", () => { closeMenu(); refreshHex(); });
     clearSelBtn.addEventListener("click", () => { selectedRange = null; anchorAbs = null; hoverRange = null; closeMenu(); refreshHex(); });
+    hexBox.addEventListener("scroll", () => scheduleVirtualRows(false), { passive: true });
 
     function attachHexSelectionAndHoverHandlers(hexNode) {
       const getAbsFromTarget = (t) => {
@@ -2260,6 +2845,7 @@
       setSelectedRange: (r) => { selectedRange = r; },
       setHoverRange: (r) => { hoverRange = r; },
       setAnchorAbs: (a) => { anchorAbs = a; },
+      scrollToOffset,
     };
 
     refreshHex();
